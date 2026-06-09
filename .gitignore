@@ -1,0 +1,9 @@
+# .gitignore
+.env
+gem-asea/
+__pycache__/
+*.pyc
+.vscode/
+junit_report.xml
+test_inventory.py
+test_*.py

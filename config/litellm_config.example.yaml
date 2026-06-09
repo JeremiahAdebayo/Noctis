@@ -1,0 +1,57 @@
+# litellm_config.yaml
+model_list:
+  # =========================================================================
+  # 1. THE PLANNER: Cerebras GLM-4.7 Pool (~1,000 tok/s)
+  # =========================================================================
+  - model_name: gem-asea-planner
+    litellm_params:
+      model: cerebras/zai-glm-4.7
+      api_key: 
+      rpm: 30
+  - model_name: gem-asea-planner-fallback
+    litellm_params:
+      model: groq/qwen/qwen3-32b
+      api_key: 
+      rpm: 30
+      extra_body:
+        reasoning_format: hidden
+
+  # =========================================================================
+  # 2. THE CODER: NVIDIA Nemotron Pool
+  # =========================================================================
+  - model_name: gem-asea-coder
+    litellm_params:
+      model: openai/qwen/qwen3-coder-480b-a35b-instruct
+      api_base: https://integrate.api.nvidia.com/v1
+      api_key: 
+      rpm: 30
+  - model_name: gem-asea-coder-fallback
+    litellm_params:
+      model: groq/qwen/qwen3-32b
+      api_key: 
+      rpm: 30
+      extra_body:
+        reasoning_format: hidden
+
+  # =========================================================================
+  # 3. THE CRITIC: Groq Qwen-2.5 Pool
+  # =========================================================================
+  - model_name: gem-asea-critic
+    litellm_params:
+      model: groq/llama-3.3-70b-versatile
+      api_key: 
+      rpm: 30
+  - model_name: gem-asea-critic
+    litellm_params:
+      model: groq/llama-3.3-70b-versatile
+      api_key: 
+      rpm: 30
+router_settings:
+  routing_strategy: simple-shuffle  #  Correct LiteLLM nomenclature
+  cooldown_time: 30
+  num_retries: 1
+  fallbacks:
+    - gem-asea-coder: ["gem-asea-coder-fallback"]
+    - gem-asea-planner: ["gem-asea-planner-fallback"]
+litellm_settings:
+  drop_params: true
