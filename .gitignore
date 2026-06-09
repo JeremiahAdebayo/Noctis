@@ -4,6 +4,10 @@ gem-asea/
 __pycache__/
 *.pyc
 .vscode/
+*.egg-info/
+dist/
+build/
+*.egg-info
 junit_report.xml
 test_inventory.py
 test_*.py
