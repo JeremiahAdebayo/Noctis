@@ -29,8 +29,9 @@ class AgentState(TypedDict):
     test_file: Optional[str]
     file_registry: Dict[str, Any]
     pending_edits: List[Any]
+    requirement_path: str
     
-    # Planner outputs — THESE WERE MISSING
+    # Planner outputs 
     target_file: Optional[str]
     target_function: Optional[str]
     dependency_manifest: Optional[Dict]

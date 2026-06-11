@@ -2,7 +2,6 @@
 import os
 import subprocess
 import sys
-import textwrap
 import xml.etree.ElementTree as ET
 import ast
 from typing import List
@@ -80,8 +79,6 @@ critic_prompt = ChatPromptTemplate.from_template(
     "Original Issue:\n{issue_body}\n\n"
     "Proposed Code Patch:\n{patch_code}\n\n"
     "Automated Test Execution Output:\n{test_output}\n\n"
-    "Evaluate if the issue is fully resolved. Output your verdict and feedback strictly following these formatting rules:\n"
-    "{format_instructions}"
 )
 critic_chain = critic_prompt | critic_llm.with_structured_output(CriticOutput)
 
@@ -171,6 +168,7 @@ def issue_parser_node(state: AgentState) -> AgentState:
          "{repo_summary}\n\n"
          "Generate a unique issue ID, concise issue title, and detailed issue body "
          "describing every bug found, which functions are affected, and what the correct behavior should be."
+         "Also return a list of dependency names to run to install necessary dependencies separated by new line"
         )
     ])
 
@@ -181,10 +179,15 @@ def issue_parser_node(state: AgentState) -> AgentState:
     print(f"[Issue Parser]: Title — {result.issue_title}")
     print(f"[Issue Parser]: Body — {result.issue_body}")
 
+    requirement = os.path.join(repo_path, "requirements.txt")
+    with open(requirement, "w", encoding="utf-8") as f:
+        f.write("\n". join(result.imports))
+
     return {
         "issue_id": result.issue_id,
         "issue_title": result.issue_title,
-        "issue_body": result.issue_body
+        "issue_body": result.issue_body,
+        "requirement_path": requirement
     }
 
 def repo_reset_node(state: AgentState) -> AgentState:
@@ -286,7 +289,6 @@ def critic_node(state: AgentState) -> AgentState:
         "issue_body": state["issue_body"],
         "patch_code": state["current_code"],
         "test_output": state.get("test_output", "No run data available."),
-        "format_instructions": critic_parser.get_format_instructions()
     })
     
     # 2. Access attributes directly from the Pydantic object.
@@ -299,6 +301,7 @@ def critic_node(state: AgentState) -> AgentState:
     return state
 
 def install_dependencies(repo_path: str, python_executable: str):
+    print("---INSTALLING DEPENDENCIES...---\n")
     req_file = os.path.join(repo_path, "requirements.txt")
     pyproject = os.path.join(repo_path, "pyproject.toml")
     
@@ -331,10 +334,10 @@ def test_generator_node(state: AgentState) -> AgentState:
     target_function = state["target_function"]
 
     # Check if a test file already exists for this target
-    """existing_test_file = os.path.join(repo_path, f"test_{target_file}")
+    existing_test_file = os.path.join(repo_path, f"test_{target_file}")
     if os.path.exists(existing_test_file):
         print(f"[Test Generator]: Existing test file found — using 'test_{target_file}' as-is.")
-        return {"test_file": f"test_{target_file}"}"""
+        return {"test_file": f"test_{target_file}"}
 
     # No existing tests — generate them
     full_target_path = os.path.join(repo_path, target_file)
@@ -423,77 +426,84 @@ def test_executor_node(state: AgentState) -> AgentState:
     report_xml_path = os.path.join(repo_path, "junit_report.xml")
     install_dependencies(repo_path, sys.executable)
     
-    # 1. Execute pytest with an explicit XML artifact directive
     try:
-        # We use a single string and shell=True so Windows resolves 
-        # the 'pytest' executable alias inside your virtual environment.
         cmd = f'"{sys.executable}" -m pytest --junitxml="{report_xml_path}"'
-        
         result = subprocess.run(
-            cmd, 
+            cmd,
             cwd=repo_path,
-            shell=True,             # Added: Required for Windows path resolution
-            capture_output=True, 
-            text=True, 
+            shell=True,
+            capture_output=True,
+            text=True,
             timeout=45
         )
-        
-        # Guardrail: Check if the XML file was actually generated
+
+        print(f"[Sandbox DEBUG] returncode: {result.returncode}")
+        print(f"[Sandbox DEBUG] stdout: {result.stdout}")
+        print(f"[Sandbox DEBUG] stderr: {result.stderr}")
+
+        # Guardrail: pytest crashed before generating XML
         if not os.path.exists(report_xml_path):
             state["test_output"] = (
-            f"CRITICAL: Test runner failed to execute.\n"
-            f"STDOUT: {result.stdout}\n"
-            f"STDERR: {result.stderr}\n"
-            f"Return code: {result.returncode}"
+                f"CRITICAL: Test runner failed to execute.\n"
+                f"STDOUT: {result.stdout}\n"
+                f"STDERR: {result.stderr}\n"
+                f"Return code: {result.returncode}"
             )
-            print(f"[Sandbox DEBUG] stdout: {result.stdout}")
-            print(f"[Sandbox DEBUG] stderr: {result.stderr}")
-            print(f"[Sandbox DEBUG] returncode: {result.returncode}")
-            state["test_output"] = f"CRITICAL: Test runner failed.\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
+            state["is_resolved"] = False
             return state
 
-        # 2. Parse the machine-readable XML artifact
+        # Parse XML
         tree = ET.parse(report_xml_path)
         root = tree.getroot()
-        
         failures_summary = []
-        
-        # Iterate strictly through failing test cases
+
         for testcase in root.findall(".//testcase"):
             failure_node = testcase.find("failure")
-            if failure_node is not None:
+            error_node = testcase.find("error")
+            problem_node = failure_node or error_node
+
+            if problem_node is not None:
                 test_name = testcase.get("name", "Unknown Test")
                 classname = testcase.get("classname", "Unknown Class")
-                error_message = failure_node.get("message", "No message provided")
-                traceback_text = failure_node.text or ""
-                
-                # Format into a clean, structured schema block for the LLM
+                problem_type = "FAILURE" if failure_node is not None else "ERROR"
+                error_message = problem_node.get("message", "No message provided")
+                traceback_text = problem_node.text or ""
+
                 failures_summary.append(
-                    f"FAILING TEST: {classname}.{test_name}\n"
-                    f"ERROR MESSAGE: {error_message}\n"
+                    f"{problem_type} — {classname}.{test_name}\n"
+                    f"MESSAGE: {error_message}\n"
                     f"TRACEBACK:\n{traceback_text.strip()}\n"
                     f"{'='*50}"
                 )
-        
-        # Clean up the artifact file immediately to ensure isolation between iterations
+
         os.remove(report_xml_path)
-        
-        # 3. Commit structured telemetry data back to the blackboard
+
+        # Extra guardrail: returncode non-zero but XML had no failure/error nodes
+        # This catches cases like collection errors that slip through
+        if len(failures_summary) == 0 and result.returncode != 0:
+            state["test_output"] = (
+                f"CRITICAL: Pytest exited with code {result.returncode} but no failures were parsed.\n"
+                f"STDOUT: {result.stdout}\n"
+                f"STDERR: {result.stderr}"
+            )
+            state["is_resolved"] = False
+            return state
+
         if len(failures_summary) == 0:
             print("[Sandbox Status]: All Tests Passed Cleanly.")
             state["test_output"] = "ALL TESTS PASSED CLEANLY."
             state["is_resolved"] = True
         else:
-            print(f"[Sandbox Status]: Detected {len(failures_summary)} Explicit Failures.")
+            print(f"[Sandbox Status]: Detected {len(failures_summary)} Failure(s)/Error(s).")
             state["test_output"] = "\n".join(failures_summary)
             state["is_resolved"] = False
-            
+
     except subprocess.TimeoutExpired:
         state["test_output"] = "EXECUTION ERROR: Test suite timed out after 45 seconds."
         state["is_resolved"] = False
         if os.path.exists(report_xml_path):
             os.remove(report_xml_path)
-            
+
     return state
 
 def resolver_node(state: AgentState) -> AgentState:

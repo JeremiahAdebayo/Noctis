@@ -21,7 +21,7 @@ model_list:
   # =========================================================================
   - model_name: gem-asea-coder
     litellm_params:
-      model: openai/qwen/qwen3-coder-480b-a35b-instruct
+      model: openai/qwen/qwen3.5-397b-a17b
       api_base: https://integrate.api.nvidia.com/v1
       api_key: os.environ/NVIDIA_API_KEY
       rpm: 30

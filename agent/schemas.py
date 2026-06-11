@@ -12,6 +12,7 @@ class IssueParserOutput(BaseModel):
     issue_id: str = Field(description="A unique issue ID in the format ISSUE-XXX.")
     issue_title: str = Field(description="Concise title describing the bug(s) found.")
     issue_body: str = Field(description="Detailed description of the bugs, which functions are affected, and what the correct behavior should be.")
+    imports : List[str] = Field(description = "List of names of depencencies to install")
 
 class Edit(BaseModel):
     old_content: str = Field(
