@@ -19,12 +19,13 @@ class TaskEngine:
         self.completed: Set[str] = set()
         self.scheduled: Set[str] = set()
         self._lock = asyncio.Lock()
-
     def add_task(self, task: Task):
+        for dep in task.deps:
+            if dep not in self.tasks:
+                raise ValueError(f"Dependency {dep} not found for task {task.id}")
         self.tasks[task.id] = task
         for dep in task.deps:
             self.dependents[dep].append(task.id)
-
     async def run_task(self, task_id: str):
         if task_id in self.cache:
             return self.cache[task_id]
@@ -55,13 +56,18 @@ class TaskEngine:
             if child not in self.completed and child not in self.scheduled:
                 self.scheduled.add(child)
                 asyncio.create_task(self.run_task(child))
-
     async def run_all(self):
         # Create a list of root tasks (those without dependencies)
         root_tasks = [task_id for task_id, task in self.tasks.items() if not task.deps]
-        
-        # Schedule all root tasks concurrently
-        await asyncio.gather(*[self.run_task(task_id) for task_id in root_tasks])
+
+        try:
+            # Schedule all root tasks concurrently
+            await asyncio.gather(*[self.run_task(task_id) for task_id in root_tasks])
+        except Exception:
+            # If any root task fails, clear the scheduled and completed sets
+            self.scheduled.clear()
+            self.completed.clear()
+            raise
 
 
 # ---------------- TEST TASKS ----------------

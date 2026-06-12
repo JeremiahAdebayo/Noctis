@@ -48,7 +48,7 @@ def debug_state_pass(state: AgentState):
 workflow = StateGraph(AgentState)
 
 # 3. Inject Nodes directly onto the execution grid
-workflow.add_node("issue_parser", issue_parser_node)
+#workflow.add_node("issue_parser", issue_parser_node)
 workflow.add_node("reset", repo_reset_node)
 workflow.add_node("indexer", pre_planner_indexer_node)
 workflow.add_node("planner", planner_node)
@@ -60,8 +60,7 @@ workflow.add_node("reassembler", reassembler_node)
 workflow.add_node("executor", test_executor_node)
 workflow.add_node("critic", critic_node)
 
-workflow.set_entry_point("issue_parser")
-workflow.add_edge("issue_parser", "reset")
+workflow.set_entry_point("reset")
 workflow.add_edge("reset", "indexer")
 workflow.add_edge("indexer", "planner")
 workflow.add_edge("planner", "debug_agent")

@@ -5,13 +5,14 @@ model_list:
   # =========================================================================
   - model_name: gem-asea-planner
     litellm_params:
-      model: cerebras/zai-glm-4.7
-      api_key: os.environ/CEREBRAS_API_KEY
+      model: openai/zai-org/glm-5.1
+      api_key: os.environ/NVIDIA_API_KEY
       rpm: 30
+      reasoning_effort: 
   - model_name: gem-asea-planner-fallback
     litellm_params:
-      model: groq/qwen/qwen3-32b
-      api_key: os.environ/GROQ_API_KEY
+      model: cerebras/zai-glm-4.7
+      api_key: os.environ/CEREBRAS_API_KEY
       rpm: 30
       extra_body:
         reasoning_format: hidden
@@ -21,17 +22,17 @@ model_list:
   # =========================================================================
   - model_name: gem-asea-coder
     litellm_params:
-      model: openai/qwen/qwen3.5-397b-a17b
+      model: openai/nvidia/nemotron-3-super-120b-a12b
       api_base: https://integrate.api.nvidia.com/v1
       api_key: os.environ/NVIDIA_API_KEY
       rpm: 30
   - model_name: gem-asea-coder-fallback
     litellm_params:
-      model: groq/qwen/qwen3-32b
+      model: groq/llama-3.3-70b-versatile
       api_key: os.environ/GROQ_API_KEY
       rpm: 30
-      extra_body:
-        reasoning_format: hidden
+      #extra_body:
+       # reasoning_format: hidden
 
   # =========================================================================
   # 3. THE CRITIC: Groq Qwen-2.5 Pool
@@ -49,9 +50,10 @@ model_list:
 router_settings:
   routing_strategy: simple-shuffle  #  Correct LiteLLM nomenclature
   cooldown_time: 30
-  num_retries: 1
+  num_retries: 3
   fallbacks:
     - gem-asea-coder: ["gem-asea-coder-fallback"]
     - gem-asea-planner: ["gem-asea-planner-fallback"]
+    - gem-asea-critic : ["gem-asea-planner"]
 litellm_settings:
   drop_params: true

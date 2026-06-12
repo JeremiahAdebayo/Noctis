@@ -7,7 +7,7 @@ initial_blackboard_state = {
     "issue_title": None,
     "issue_body": None,
     "repo_path": "C:\\Users\\Jeremiah\\scripts\\Gem-asea\\tests",
-    "target_file": "inventory.py",
+    "target_file": "orch_test.py",
     "target_function": None,
     "test_file": None,
     "original_code": None,
