@@ -17,7 +17,7 @@ from agent.schemas import (IssueParserOutput,
                            TestGeneratorOutput, 
                            apply_edit_to_source)
 from agent.state import AgentState
-from agent.qdrant_utils import ensure_collection, index_chunks, clear_collection, retrieve_chunks
+from agent.qdrant_utils import get_client, ensure_collection, get_embedder, index_chunks, clear_collection, retrieve_chunks
 from dotenv import load_dotenv
 
 
@@ -29,7 +29,7 @@ planner_parser = PydanticOutputParser(pydantic_object=PlannerOutput)
 coder_parser   = PydanticOutputParser(pydantic_object=EngineerOutput)
 critic_parser  = PydanticOutputParser(pydantic_object=CriticOutput)
 
-planner_llm = ChatOpenAI(base_url=PROXY_URL, model="gem-asea-planner", api_key=PROXY_KEY, temperature=0.1)
+planner_llm = ChatOpenAI(base_url=PROXY_URL, model="gem-asea-planner", api_key=PROXY_KEY, temperature=0.1, extra_body={"reasoning_effort":"none"})
 coder_llm   = ChatOpenAI(base_url=PROXY_URL, model="gem-asea-coder",   api_key=PROXY_KEY, temperature=0.1)
 critic_llm  = ChatOpenAI(base_url=PROXY_URL, model="gem-asea-critic",  api_key=PROXY_KEY, temperature=0.1)
 
@@ -38,7 +38,7 @@ planner_prompt = ChatPromptTemplate.from_template(
     "Issue: {issue_title}\n{issue_body}\n\n"
     "Relevant code retrieved from the repository:\n{registry_summary}\n\n"
     "Your Goal: Create a precise execution plan to fix the issue.\n"
-    "You must pick a 'target_function' that needs modification — use ONLY function names "
+    "You must pick valid 'target_functions' or 'class names' that needs modification — use ONLY function or class names "
     "that appear in the code above. Never invent or infer function names.\n"
 )
 
@@ -82,7 +82,7 @@ coder_prompt = ChatPromptTemplate.from_messages([
      "Issue Title: {issue_title}\n"
      "Issue Body:\n{issue_body}\n\n"
      "Execution Plan:\n{plan}\n\n"
-     "Target Node: {target_function}\n\n"
+     "Target Node: {target_functions}\n\n"
      "Source Code:\n{current_code}\n\n"
      "Test File ({test_file_name}):\n{test_code}\n\n"
      #"Previous Critic Feedback (if any):\n{critic_feedback}\n\n"
@@ -264,8 +264,13 @@ def planner_node(state: AgentState) -> AgentState:
     print("\n--- [PLANNER] ANALYZING REGISTRY & GENERATING STRATEGY ---")
 
     # Retrieve semantically relevant chunks from Qdrant
-    query = f"{state['issue_title']} {state['issue_body']}"
-    relevant_chunks = retrieve_chunks(query, top_k=8)
+    if state["iteration_count"] == 0:
+        # First pass — broad retrieval on issue text
+        query = f"{state['issue_title']} {state['issue_body']}"
+    else:
+        # Subsequent passes — refine query using critic feedback + test output
+        query = f"{state['issue_title']} {state['critic_feedback']} {state['test_output']}"
+    relevant_chunks = retrieve_chunks(query, top_k=3)
 
     if not relevant_chunks:
         print("[Planner WARNING]: Qdrant returned no chunks — falling back to registry summary")
@@ -275,10 +280,10 @@ def planner_node(state: AgentState) -> AgentState:
         ])
     else:
         context = "\n\n".join([
-            f"=== {chunk['path']} | {chunk['type']} '{chunk['name']}' "
-            f"(lines {chunk['start_line']}-{chunk['end_line']}) ===\n{chunk['source']}"
-            for chunk in relevant_chunks
-        ])
+    f"=== {chunk['path']} | {chunk['type']} '{chunk['name']}' "
+    f"(lines {chunk['start_line']}-{chunk['end_line']}) ==="
+    for chunk in relevant_chunks
+    ])
         print(f"[Planner]: Retrieved {len(relevant_chunks)} chunks from Qdrant")
 
     result = planner_chain.invoke({
@@ -287,15 +292,13 @@ def planner_node(state: AgentState) -> AgentState:
         "registry_summary": context
     })
 
-    print(f"[Planner] target_file: {result.target_file}")
-    print(f"[Planner] target_function: {result.target_function}")
+    print(f"[Planner] target_functions: {result.target_functions}")
     print(f"[Planner] rationale: {result.rationale}")
 
     return {
         "plan": result.plan,
-        "target_file": result.target_file,
         "pending_edits": [],
-        "target_function": result.target_function
+        "target_functions": result.target_functions
     }
 
 # =========================================================================
@@ -303,10 +306,10 @@ def planner_node(state: AgentState) -> AgentState:
 # =========================================================================
 
 def engineer_node(state: AgentState) -> AgentState:
-    print(f"\n--- [ENGINEER] GENERATING SURGICAL PATCHES (ATTEMPT {state['iteration_count']}+1) ---")
+    print(f"\n--- [ENGINEER] GENERATING SURGICAL PATCHES (ATTEMPT {state['iteration_count'] +1}) ---")
 
     target_file = state.get("target_file", "")
-    target_function = state.get("target_function", "")
+    target_functions = state.get("target_functions", "")
     full_target_path = os.path.join(state['repo_path'], target_file)
 
     with open(full_target_path, "r", encoding="utf-8") as f:
@@ -329,7 +332,7 @@ def engineer_node(state: AgentState) -> AgentState:
         "current_code": disk_truth,
         "test_code": test_truth,
         #"critic_feedback": state.get("critic_feedback", "No feedback yet."),
-        "target_function": target_function,
+        "target_functions": target_functions,
         "target_file": state.get("target_file", "Can't find target file"),
         "test_file_name": state.get("test_file_name", "")
     })
@@ -411,7 +414,11 @@ def test_generator_node(state: AgentState) -> AgentState:
     
     repo_path = state["repo_path"]
     target_file = state["target_file"]
-    target_function = state["target_function"]
+    target_functions = state["target_functions"]
+
+    print(f"Target file {target_file} \n")
+    print(f"Path {repo_path}")
+
 
     # Check if a test file already exists for this target
     existing_test_file = os.path.join(repo_path, f"test_{target_file}")
@@ -440,10 +447,10 @@ def test_generator_node(state: AgentState) -> AgentState:
          "Use only pytest, no unittest."),
         ("human",
          "Issue: {issue_body}\n\n"
-         "Target function: {target_function}\n"
+         "Target functions: {target_functions}\n"
          "Source file: {target_file}\n\n"
          "Source code:\n{source}\n\n"
-         "Write a complete pytest test file that imports '{target_function}' "
+         "Write a complete pytest test file that imports '{target_functions}' "
          "from '{module_name}' and contains at least 7 test functions."
          "CRITICAL: Do not write test code based on the file name. Read the source code and write test code based on the function"
         )
@@ -459,7 +466,7 @@ def test_generator_node(state: AgentState) -> AgentState:
 
         result = chain.invoke({
             "issue_body": state["issue_body"],
-            "target_function": target_function,
+            "target_functions": target_functions,
             "target_file": target_file,
             "source": source,
             "module_name": target_file.replace(".py", "")
@@ -648,7 +655,7 @@ def reassembler_node(state: AgentState) -> AgentState:
     failed_feedback_parts = []
 
     for patch in patches:
-        file_path = os.path.join(repo_path, patch.file_path)
+        file_path = os.path.join(state['repo_path'], state['target_file'])
 
         if not os.path.exists(file_path):
             print(f"[Reassembler WARNING]: File not found — {patch.file_path}")

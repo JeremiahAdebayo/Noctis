@@ -14,8 +14,8 @@ class AgentState(TypedDict):
     requirement_path: str
     
     # Planner outputs 
-    target_file: Optional[str]
-    target_function: Optional[str]
+    target_file: List[Any]
+    target_functions: Optional[str]
     dependency_manifest: Optional[Dict]
     
     # Execution State

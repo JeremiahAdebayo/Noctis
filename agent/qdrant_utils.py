@@ -1,11 +1,13 @@
 from qdrant_client import QdrantClient
 from qdrant_client.models import VectorParams, Distance, PointStruct
 from sentence_transformers import SentenceTransformer
+from dotenv import load_dotenv
 import uuid
 import os
 
-QDRANT_URL = "https://dc231e54-2819-4711-9de9-2dc2db3f0669.eu-west-1-0.aws.cloud.qdrant.io"
-QDRANT_API_KEY = os.environ["QDRANT_API_KEY"]
+load_dotenv()
+QDRANT_URL = os.getenv("QDRANT_URL")
+QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
 COLLECTION_NAME = "codebase"
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 
@@ -15,7 +17,7 @@ _embedder = None
 def get_client() -> QdrantClient:
     global _client
     if _client is None:
-        _client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
+        _client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY,verify=False, timeout=60)
     return _client
 
 def get_embedder() -> SentenceTransformer:
@@ -74,14 +76,14 @@ def retrieve_chunks(query: str, top_k: int = 8) -> list[dict]:
     embedder = get_embedder()
 
     vector = embedder.encode([query])[0].tolist()
-    results = client.search(
+    results = client.query_points(
         collection_name=COLLECTION_NAME,
-        query_vector=vector,
+        query=vector,
         limit=top_k,
         with_payload=True
     )
 
-    return [hit.payload for hit in results]
+    return [hit.payload for hit in results.points]
 
 def clear_collection():
     """Call this before indexing a new repo so stale chunks don't bleed in."""

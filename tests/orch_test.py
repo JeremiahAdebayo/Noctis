@@ -63,6 +63,15 @@ class TaskEngine:
         try:
             # Schedule all root tasks concurrently
             await asyncio.gather(*[self.run_task(task_id) for task_id in root_tasks])
+
+            # Wait for all scheduled tasks to complete
+            while self.scheduled:
+                # Copy scheduled set to avoid modification during iteration
+                scheduled_copy = self.scheduled.copy()
+                await asyncio.gather(*[self.run_task(task_id) for task_id in scheduled_copy], return_exceptions=True)
+                # Check if any tasks are still pending (newly scheduled by completed tasks)
+                if self.scheduled == scheduled_copy:
+                    break
         except Exception:
             # If any root task fails, clear the scheduled and completed sets
             self.scheduled.clear()

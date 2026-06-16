@@ -5,10 +5,12 @@ model_list:
   # =========================================================================
   - model_name: gem-asea-planner
     litellm_params:
-      model: openai/zai-org/glm-5.1
-      api_key: os.environ/NVIDIA_API_KEY
+      model: cerebras/gpt-oss-120b
+      api_key: os.environ/CEREBRAS_API_KEY
       rpm: 30
-      reasoning_effort: 
+      extra_body:
+        reasoning_effort: none
+        reasoning_format: hidden
   - model_name: gem-asea-planner-fallback
     litellm_params:
       model: cerebras/zai-glm-4.7
@@ -22,7 +24,8 @@ model_list:
   # =========================================================================
   - model_name: gem-asea-coder
     litellm_params:
-      model: openai/nvidia/nemotron-3-super-120b-a12b
+      #model: openai/nvidia/nemotron-3-ultra-550b-a55b
+      model: openai/deepseek-ai/deepseek-v4-flash
       api_base: https://integrate.api.nvidia.com/v1
       api_key: os.environ/NVIDIA_API_KEY
       rpm: 30
@@ -39,12 +42,12 @@ model_list:
   # =========================================================================
   - model_name: gem-asea-critic
     litellm_params:
-      model: groq/llama-3.3-70b-versatile
+      model: groq/llama-3.3-70b-versatile 
       api_key: os.environ/GROQ_API_KEY
       rpm: 30
   - model_name: gem-asea-critic
     litellm_params:
-      model: groq/llama-3.3-70b-versatile
+      model: groq/qwen/qwen3-32b
       api_key: os.environ/GROQ_API_KEY
       rpm: 30
 router_settings:

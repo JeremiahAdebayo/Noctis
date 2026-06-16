@@ -7,8 +7,7 @@ import ast
 
 class PlannerOutput(BaseModel):
     plan: str = Field(..., description="High-level execution plan describing exactly what changes to make.")
-    target_file: str = Field(..., description="The EXACT file path as it appears in the === FILE === headers above. Do not invent or modify paths.")
-    target_function: str = Field(..., description="The EXACT function or class name as it appears in the code above. Do not invent names.")
+    target_functions: List[str] = Field(..., description="The EXACT functions or class names as it appears in the code above. Do not invent names.")
     rationale: str = Field(..., description="Why this specific location was chosen to fix the issue.")
 
 class IssueParserOutput(BaseModel):
