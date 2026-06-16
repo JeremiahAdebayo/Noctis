@@ -51,7 +51,7 @@ planner_chain = planner_prompt | planner_llm.with_structured_output(PlannerOutpu
 # --- CODER CHAIN CONFIGURATION ---
 coder_prompt = ChatPromptTemplate.from_messages([
     ("system",
-     "You are an elite software engineer. You make precise, surgical edits to fix bugs.\n\n"
+     "You are an elite software engineer. It's important that you also think incredibly logically. You make precise, surgical edits to fix bugs.\n\n"
      "For each fix you must provide:\n"
      "- file_path: relative path to the file\n"
      "- node_type: one of 'function', 'class', or 'method'\n"
@@ -443,6 +443,7 @@ def test_generator_node(state: AgentState) -> AgentState:
          "You are a senior QA engineer. Write pytest tests that define CORRECT expected behavior "
          "after the bug is fixed. Do NOT write tests that expect exceptions or reproduce the bug. "
          "Tests should assert what the function SHOULD return when working correctly. "
+         "Write tests that are air tight and catches logical bugs"
          "The test code you write should be inferred from what the main code is trying to do and not from the file name"
          "Use only pytest, no unittest."),
         ("human",

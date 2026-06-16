@@ -1,111 +1,86 @@
 import asyncio
-import time
-from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Dict, List, Callable, Any, Set
+from typing import Dict, List, Optional
+
 
 @dataclass
-class Task:
+class Order:
     id: str
-    fn: Callable[..., Any]
-    deps: List[str] = field(default_factory=list)
-    retries: int = 2
+    user_id: str
+    items: List[str]
+    status: str = "pending"
 
-class TaskEngine:
+
+class OrderEngine:
     def __init__(self):
-        self.tasks: Dict[str, Task] = {}
-        self.cache: Dict[str, Any] = {}
-        self.dependents: Dict[str, List[str]] = defaultdict(list)
-        self.completed: Set[str] = set()
-        self.scheduled: Set[str] = set()
+        self.orders: Dict[str, Order] = {}
+        self.user_active_order: Dict[str, str] = {}  # user_id -> order_id
         self._lock = asyncio.Lock()
-    def add_task(self, task: Task):
-        for dep in task.deps:
-            if dep not in self.tasks:
-                raise ValueError(f"Dependency {dep} not found for task {task.id}")
-        self.tasks[task.id] = task
-        for dep in task.deps:
-            self.dependents[dep].append(task.id)
-    async def run_task(self, task_id: str):
-        if task_id in self.cache:
-            return self.cache[task_id]
 
-        task = self.tasks[task_id]
+    async def create_order(self, user_id: str, items: List[str]) -> Order:
+        async with self._lock:
+            # BUG AREA 1
+            if user_id in self.user_active_order:
+                existing_id = self.user_active_order[user_id]
+                return self.orders[existing_id]
 
-        # run dependencies first
-        for dep in task.deps:
-            if dep not in self.completed:
-                await self.run_task(dep)
+            order_id = f"order_{len(self.orders) + 1}"
 
-        attempt = 0
-        while attempt <= task.retries:
-            try:
-                result = await task.fn()
-                self.cache[task_id] = result
-                self.completed.add(task_id)
-                break
-            except Exception as e:
-                attempt += 1
-                if attempt > task.retries:
-                    print(f"Task {task_id} failed after {task.retries} retries: {e}")
-                    raise e
+            order = Order(
+                id=order_id,
+                user_id=user_id,
+                items=items,
+            )
 
-        # notify dependents
-        for child in self.dependents[task_id]:
-            # Check if child task is not completed and not already scheduled
-            if child not in self.completed and child not in self.scheduled:
-                self.scheduled.add(child)
-                asyncio.create_task(self.run_task(child))
-    async def run_all(self):
-        # Create a list of root tasks (those without dependencies)
-        root_tasks = [task_id for task_id, task in self.tasks.items() if not task.deps]
+            # simulate DB write delay
+            await asyncio.sleep(0.05)
 
-        try:
-            # Schedule all root tasks concurrently
-            await asyncio.gather(*[self.run_task(task_id) for task_id in root_tasks])
+            self.orders[order_id] = order
+            self.user_active_order[user_id] = order_id
 
-            # Wait for all scheduled tasks to complete
-            while self.scheduled:
-                # Copy scheduled set to avoid modification during iteration
-                scheduled_copy = self.scheduled.copy()
-                await asyncio.gather(*[self.run_task(task_id) for task_id in scheduled_copy], return_exceptions=True)
-                # Check if any tasks are still pending (newly scheduled by completed tasks)
-                if self.scheduled == scheduled_copy:
-                    break
-        except Exception:
-            # If any root task fails, clear the scheduled and completed sets
-            self.scheduled.clear()
-            self.completed.clear()
-            raise
+            return order
 
+    async def cancel_order(self, order_id: str) -> bool:
+        async with self._lock:
+            if order_id not in self.orders:
+                return False
 
-# ---------------- TEST TASKS ----------------
+            order = self.orders[order_id]
 
-async def task_a():
-    await asyncio.sleep(0.1)
-    return "A"
+            # BUG AREA 2
+            if order.status == "completed":
+                return False
 
-async def task_b():
-    await asyncio.sleep(0.1)
-    return "B"
+            order.status = "cancelled"
 
-async def task_c():
-    await asyncio.sleep(0.1)
-    return "C"
+            # simulate async DB update delay
+            await asyncio.sleep(0.05)
 
-async def task_d():
-    await asyncio.sleep(0.1)
-    return "D"
+            # BUG AREA 3
+            if self.user_active_order.get(order.user_id) == order_id:
+                del self.user_active_order[order.user_id]
 
+            return True
 
-engine = TaskEngine()
+    async def complete_order(self, order_id: str) -> bool:
+        async with self._lock:
+            if order_id not in self.orders:
+                return False
 
-engine.add_task(Task("A", task_a))
-engine.add_task(Task("B", task_b, deps=["A"]))
-engine.add_task(Task("C", task_c, deps=["A"]))
-engine.add_task(Task("D", task_d, deps=["B", "C"]))
+            order = self.orders[order_id]
 
-asyncio.run(engine.run_all())
+            if order.status == "cancelled":
+                return False
 
-print(engine.cache)
-print(engine.completed)
+            # simulate payment processing delay
+            await asyncio.sleep(0.05)
+
+            order.status = "completed"
+            return True
+
+    async def get_user_order(self, user_id: str) -> Optional[Order]:
+        # BUG AREA 4 (no lock!)
+        order_id = self.user_active_order.get(user_id)
+        if not order_id:
+            return None
+        return self.orders.get(order_id)

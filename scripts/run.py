@@ -1,44 +1,62 @@
 # main.py
 from agent.graph import app
 
-issue = """Title: TaskEngine does not execute all dependent tasks
+issue = """# Bug: Users occasionally see incorrect order state after concurrent operations
 
-I'm seeing inconsistent behavior when running a dependency graph through TaskEngine.
+## Description
 
-For a graph where task D depends on B and C, and both B and C depend on A, sometimes D never appears in the completed set after calling run_all().
+We've received reports that order state can become inconsistent when multiple actions occur around the same time.
 
-Example:
+In production, users have occasionally observed one or more of the following:
 
-python
-engine = TaskEngine()
+* An order that was cancelled later appears as completed.
+* A user is unable to create a new order because the system believes an active order already exists.
+* The active order returned for a user appears to be stale or no longer valid.
+* Rapid sequences of create, cancel, and complete operations sometimes produce unexpected results.
 
-engine.add_task(Task("A", task_a))
-engine.add_task(Task("B", task_b, deps=["A"]))
-engine.add_task(Task("C", task_c, deps=["A"]))
-engine.add_task(Task("D", task_d, deps=["B", "C"]))
+The issue is difficult to reproduce consistently and appears to occur only under concurrent usage.
 
-await engine.run_all()
+## Expected Behavior
 
+The system should maintain the following invariants:
 
-Expected:
+1. A user should have at most one active order at a time.
+2. Cancelled orders must never transition to completed status.
+3. Completed orders must never transition to cancelled status.
+4. Reads should observe a consistent view of order state.
+5. Creating, cancelling, and completing orders concurrently should not violate business rules.
 
-python
-{"A", "B", "C", "D"}
-```
+## Actual Behavior
 
-Actual:
+Under concurrent workloads, the system occasionally violates one or more of the invariants above.
 
-Sometimes only a subset of tasks are completed.
+## Reproduction Notes
 
-I haven't fully investigated, but it looks like tasks scheduled after dependency completion may not always finish before run_all() returns.
+The issue is most frequently reported when:
 
-Can someone take a look?"""
+* Multiple requests attempt to create orders for the same user simultaneously.
+* An order is cancelled while another operation attempts to complete it.
+* Reads occur while order state is actively changing.
+
+## Task
+
+Investigate the root cause and implement a fix.
+
+The fix should:
+
+* Preserve correctness under concurrent execution.
+* Prevent invalid state transitions.
+* Maintain the single-active-order guarantee.
+* Include regression tests covering the failing scenarios.
+
+Please ensure the solution addresses the underlying cause rather than only the observed symptoms.
+"""
 
 
 # In orch_test.py
 initial_blackboard_state = {
     "issue_id" : "ISSUE-001",
-    "issue_title" : "TaskEngine circular dependency not detected",
+    "issue_title" : "issue 001",
     "issue_body" : issue,
     "repo_path": "C:\\Users\\Jeremiah\\scripts\\Gem-asea\\tests",
     "target_file": "orch_test.py",
