@@ -270,7 +270,7 @@ def planner_node(state: AgentState) -> AgentState:
     else:
         # Subsequent passes — refine query using critic feedback + test output
         query = f"{state['issue_title']} {state['critic_feedback']} {state['test_output']}"
-    relevant_chunks = retrieve_chunks(query, top_k=3)
+    relevant_chunks = retrieve_chunks(query, top_k=5)
 
     if not relevant_chunks:
         print("[Planner WARNING]: Qdrant returned no chunks — falling back to registry summary")
