@@ -16,23 +16,26 @@ class OrderEngine:
         self.orders: Dict[str, Order] = {}
         self.user_active_order: Dict[str, str] = {}  # user_id -> order_id
         self._lock = asyncio.Lock()
-
     async def create_order(self, user_id: str, items: List[str]) -> Order:
         async with self._lock:
-            # BUG AREA 1
-            if user_id in self.user_active_order:
-                existing_id = self.user_active_order[user_id]
-                return self.orders[existing_id]
+            # Check for an existing active (pending) order
+            existing_id = self.user_active_order.get(user_id)
+            if existing_id:
+                existing_order = self.orders.get(existing_id)
+                if existing_order and existing_order.status == "pending":
+                    return existing_order
+                # Stale mapping – remove it so a new order can be created
+                del self.user_active_order[user_id]
 
+            # Create a new order
             order_id = f"order_{len(self.orders) + 1}"
-
             order = Order(
                 id=order_id,
                 user_id=user_id,
                 items=items,
             )
 
-            # simulate DB write delay
+            # Simulate DB write delay
             await asyncio.sleep(0.05)
 
             self.orders[order_id] = order
@@ -61,7 +64,6 @@ class OrderEngine:
                 del self.user_active_order[order.user_id]
 
             return True
-
     async def complete_order(self, order_id: str) -> bool:
         async with self._lock:
             if order_id not in self.orders:
@@ -72,15 +74,18 @@ class OrderEngine:
             if order.status == "cancelled":
                 return False
 
-            # simulate payment processing delay
+            # Simulate payment processing delay
             await asyncio.sleep(0.05)
 
             order.status = "completed"
-            return True
+            # Remove the order from the active mapping if it was the active one
+            if self.user_active_order.get(order.user_id) == order_id:
+                del self.user_active_order[order.user_id]
 
+            return True
     async def get_user_order(self, user_id: str) -> Optional[Order]:
-        # BUG AREA 4 (no lock!)
-        order_id = self.user_active_order.get(user_id)
-        if not order_id:
-            return None
-        return self.orders.get(order_id)
+        async with self._lock:
+            order_id = self.user_active_order.get(user_id)
+            if not order_id:
+                return None
+            return self.orders.get(order_id)

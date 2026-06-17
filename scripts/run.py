@@ -1,55 +1,8 @@
 # main.py
 from agent.graph import app
 
-issue = """# Bug: Users occasionally see incorrect order state after concurrent operations
-
-## Description
-
-We've received reports that order state can become inconsistent when multiple actions occur around the same time.
-
-In production, users have occasionally observed one or more of the following:
-
-* An order that was cancelled later appears as completed.
-* A user is unable to create a new order because the system believes an active order already exists.
-* The active order returned for a user appears to be stale or no longer valid.
-* Rapid sequences of create, cancel, and complete operations sometimes produce unexpected results.
-
-The issue is difficult to reproduce consistently and appears to occur only under concurrent usage.
-
-## Expected Behavior
-
-The system should maintain the following invariants:
-
-1. A user should have at most one active order at a time.
-2. Cancelled orders must never transition to completed status.
-3. Completed orders must never transition to cancelled status.
-4. Reads should observe a consistent view of order state.
-5. Creating, cancelling, and completing orders concurrently should not violate business rules.
-
-## Actual Behavior
-
-Under concurrent workloads, the system occasionally violates one or more of the invariants above.
-
-## Reproduction Notes
-
-The issue is most frequently reported when:
-
-* Multiple requests attempt to create orders for the same user simultaneously.
-* An order is cancelled while another operation attempts to complete it.
-* Reads occur while order state is actively changing.
-
-## Task
-
-Investigate the root cause and implement a fix.
-
-The fix should:
-
-* Preserve correctness under concurrent execution.
-* Prevent invalid state transitions.
-* Maintain the single-active-order guarantee.
-* Include regression tests covering the failing scenarios.
-
-Please ensure the solution addresses the underlying cause rather than only the observed symptoms.
+issue = """
+click.Path.convert() with executable=True checks executability against the wrong path when resolve_path=True is also set. The readable, writable, and existence checks all operate on rv (the path after resolution/realpath), but the executable check uses value (the original, unresolved argument). If a user passes a relative path or a symlink and has both resolve_path=True and executable=True set, the executable check can validate against a different filesystem location than every other check in the same method — potentially passing when it shouldn't, or failing when it shouldn't, depending on CWD or symlink target. All other checks in convert() are consistent in using rv; this one isn't.
 """
 
 

@@ -439,21 +439,23 @@ def test_generator_node(state: AgentState) -> AgentState:
     ).with_structured_output(TestGeneratorOutput)
 
     test_prompt = ChatPromptTemplate.from_messages([
-        ("system",
+    ("system",
          "You are a senior QA engineer. Write pytest tests that define CORRECT expected behavior "
          "after the bug is fixed. Do NOT write tests that expect exceptions or reproduce the bug. "
          "Tests should assert what the function SHOULD return when working correctly. "
-         "Write tests that are air tight and catches logical bugs"
-         "The test code you write should be inferred from what the main code is trying to do and not from the file name"
-         "Use only pytest, no unittest."),
+         "Write tests that are air tight and catch logical bugs. "
+         "The test code you write should be inferred from what the main code is trying to do and not from the file name. "
+         "Use only pytest, no unittest.\n\n"
+         "Think logically and ensure you generate code that actually tests the source file"
+         "Also make sure your imports are correct"),
         ("human",
          "Issue: {issue_body}\n\n"
          "Target functions: {target_functions}\n"
          "Source file: {target_file}\n\n"
          "Source code:\n{source}\n\n"
-         "Write a complete pytest test file that imports '{target_functions}' "
-         "from '{module_name}' and contains at least 7 test functions."
-         "CRITICAL: Do not write test code based on the file name. Read the source code and write test code based on the function"
+         "Write a complete pytest test file "
+         "and contains at least 7 test functions to test the code for logic proof. "
+         "CRITICAL: Do not write test code based on the file name. Read the source code and write test code based on the function."
         )
     ])
 

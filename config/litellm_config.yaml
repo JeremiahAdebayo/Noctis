@@ -31,6 +31,12 @@ model_list:
       rpm: 30
   - model_name: gem-asea-coder-fallback
     litellm_params:
+      model: cerebras/gpt-oss-120b
+      api_base: https://api.cerebras.ai/v1
+      api_key: os.environ/CEREBRAS_API_KEY
+      rpm : 30
+  - model_name: gem-asea-coder-groq-fallback
+    litellm_params:
       model: groq/llama-3.3-70b-versatile
       api_key: os.environ/GROQ_API_KEY
       rpm: 30
@@ -55,7 +61,7 @@ router_settings:
   cooldown_time: 30
   num_retries: 3
   fallbacks:
-    - gem-asea-coder: ["gem-asea-coder-fallback"]
+    - gem-asea-coder: ["gem-asea-coder-fallback", "gem-asea-coder-groq-fallback"]
     - gem-asea-planner: ["gem-asea-planner-fallback"]
     - gem-asea-critic : ["gem-asea-planner"]
 litellm_settings:
