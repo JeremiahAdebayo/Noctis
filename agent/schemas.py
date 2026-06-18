@@ -131,19 +131,16 @@ class FunctionReplacer(cst.CSTTransformer):
         self._current_class = None
         return updated_node
 
-    def leave_FunctionDef(
-        self, original_node: cst.FunctionDef, updated_node: cst.FunctionDef
-    ) -> Union[cst.FunctionDef, cst.BaseStatement]:
+    def leave_FunctionDef(self, original_node: cst.FunctionDef, updated_node: cst.FunctionDef) -> Union[cst.FunctionDef, cst.BaseStatement]:
         name_matches = original_node.name.value == self.target_name
-
-        if self.class_name:
-            context_matches = self._current_class == self.class_name
-        else:
-            context_matches = self._current_class is None
+        context_matches = (
+            self._current_class == self.class_name if self.class_name else self._current_class is None
+        )
 
         if name_matches and context_matches:
             self.found = True
-            return cst.parse_statement(textwrap.dedent(self.new_code))
+            new_node = cst.parse_statement(textwrap.dedent(self.new_code))
+            return new_node.with_changes(leading_lines=original_node.leading_lines)
 
         return updated_node
 
@@ -203,19 +200,24 @@ def apply_edit_to_source(source: str, edit: "Edit") -> str:
 
 
 def _prepend_missing_imports(source: str, imports: List[str]) -> str:
-    """Adds import lines that aren't already present in the file."""
-    existing = source.splitlines()
-    to_add = [imp for imp in imports if imp not in existing]
+    """Adds top-level import statements that aren't already present in the file."""
+    module = cst.parse_module(source)
+    existing_lines = set(source.splitlines())
+    to_add = [imp for imp in imports if imp not in existing_lines]
 
     if not to_add:
         return source
 
-    # Insert after the last existing import block
-    last_import_line = 0
-    for i, line in enumerate(existing):
-        stripped = line.strip()
-        if stripped.startswith("import ") or stripped.startswith("from "):
-            last_import_line = i + 1
+    new_import_nodes = [cst.parse_statement(imp) for imp in to_add]
 
-    new_lines = existing[:last_import_line] + to_add + existing[last_import_line:]
-    return "\n".join(new_lines)
+    insert_at = 0
+    for i, stmt in enumerate(module.body):
+        if isinstance(stmt, cst.SimpleStatementLine) and any(
+            isinstance(s, (cst.Import, cst.ImportFrom)) for s in stmt.body
+        ):
+            insert_at = i + 1
+
+    new_body = list(module.body[:insert_at]) + new_import_nodes + list(module.body[insert_at:])
+    new_module = module.with_changes(body=new_body)
+
+    return new_module.code

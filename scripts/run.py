@@ -2,7 +2,7 @@
 from agent.graph import app
 
 issue = """
-click.Path.convert() with executable=True checks executability against the wrong path when resolve_path=True is also set. The readable, writable, and existence checks all operate on rv (the path after resolution/realpath), but the executable check uses value (the original, unresolved argument). If a user passes a relative path or a symlink and has both resolve_path=True and executable=True set, the executable check can validate against a different filesystem location than every other check in the same method — potentially passing when it shouldn't, or failing when it shouldn't, depending on CWD or symlink target. All other checks in convert() are consistent in using rv; this one isn't.
+Choice.normalize_choice() supports case-insensitive matching via case_sensitive=False, but doesn't account for Unicode normalization. A Choice(["café", "naïve"], case_sensitive=False) will treat "café" typed with a precomposed accent (NFC) and "café" typed with a decomposed accent (NFD) as different values, even though they're visually and semantically identical — casefold() alone doesn't collapse different Unicode composition forms. Add Unicode NFC normalization as a step in normalize_choice, applied before the existing casefold step, so both forms map to the same normalized value.
 """
 
 

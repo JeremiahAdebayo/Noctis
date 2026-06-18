@@ -17,7 +17,7 @@ from agent.schemas import (IssueParserOutput,
                            TestGeneratorOutput, 
                            apply_edit_to_source)
 from agent.state import AgentState
-from agent.qdrant_utils import get_client, ensure_collection, get_embedder, index_chunks, clear_collection, retrieve_chunks
+from localizer.qdrant_utils import get_client, ensure_collection, get_embedder, index_chunks, clear_collection, retrieve_chunks
 from dotenv import load_dotenv
 
 
@@ -71,10 +71,11 @@ coder_prompt = ChatPromptTemplate.from_messages([
      "  * Only include imports not already present in the file\n"
      "  * Leave empty if no new imports are needed\n"
      "- rationale: why this change fixes the bug\n\n"
-     "Rules:\n"
+     "Rules you must NEVER break: \n"
      "- Multiple edits allowed if the bug spans multiple functions, methods, or files\n"
      "- Prefer fixing the smallest node that contains the bug — method over class, function over module\n"
      "- Never guess a node name. Use only names visible in the source code provided\n"
+     "Any new dependency must be declared via the add_imports field only."
      "- If a fix requires changing a function signature, also patch callers and tests\n"
      "- Output ONLY valid JSON matching the required schema"
     ),
@@ -659,6 +660,7 @@ def reassembler_node(state: AgentState) -> AgentState:
 
     for patch in patches:
         file_path = os.path.join(state['repo_path'], state['target_file'])
+        print(patch)
 
         if not os.path.exists(file_path):
             print(f"[Reassembler WARNING]: File not found — {patch.file_path}")

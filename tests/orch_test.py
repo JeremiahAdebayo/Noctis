@@ -347,21 +347,22 @@ class Choice(ParamType[_ValueT_co], t.Generic[_ValueT_co]):
 
     def normalize_choice(self, choice: object, ctx: Context | None) -> str:
         """
-        Normalize a choice value, used to map a passed string to a choice.
-        Each choice must have a unique normalized value.
+Normalize a choice value, used to map a passed string to a choice.
+Each choice must have a unique normalized value.
 
-        By default uses :meth:`Context.token_normalize_func` and if not case
-        sensitive, convert it to a casefolded value.
+By default uses :meth:`Context.token_normalize_func` and if not case
+sensitive, convert it to a casefolded value.
 
-        .. versionadded:: 8.2.0
-        """
+.. versionadded:: 8.2.0
+"""
         normed_value = choice.name if isinstance(choice, enum.Enum) else str(choice)
 
         if ctx is not None and ctx.token_normalize_func is not None:
             normed_value = ctx.token_normalize_func(normed_value)
 
         if not self.case_sensitive:
-            normed_value = normed_value.casefold()
+            import unicodedata
+            normed_value = unicodedata.normalize("NFC", normed_value).casefold()
 
         return normed_value
 
