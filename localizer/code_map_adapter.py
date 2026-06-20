@@ -27,7 +27,7 @@ applies.
 
 from __future__ import annotations
 
-from lexical_index import ChunkRecord
+from localizer.lexical_index import ChunkRecord
 
 
 def chunks_from_code_map(

@@ -18,6 +18,9 @@ from agent.schemas import (IssueParserOutput,
                            apply_edit_to_source)
 from agent.state import AgentState
 from localizer.qdrant_utils import get_client, ensure_collection, get_embedder, index_chunks, clear_collection, retrieve_chunks
+from localizer.lexical_index import LexicalIndex, ChunkRecord
+from localizer.code_map_adapter import chunks_from_code_map
+from localizer.fusion_rank import localize_full, get_chunk_summaries
 from dotenv import load_dotenv
 
 
@@ -118,6 +121,8 @@ def pre_planner_indexer_node(state: AgentState) -> AgentState:
     clear_collection()
 
     all_qdrant_chunks = []
+    lexical_index = LexicalIndex(db_path="lexical_repo.db")
+    all_lexical_chunks = []
 
     for root, dirs, files in os.walk(repo_path):
         dirs[:] = [d for d in dirs if d not in ignored_dirs]
@@ -157,6 +162,10 @@ def pre_planner_indexer_node(state: AgentState) -> AgentState:
                         "start_line": chunk["start_line"],
                         "end_line": chunk["end_line"],
                     })
+                
+                # Also convert to ChunkRecords for lexical index
+                lexical_chunks = chunks_from_code_map(visitor.chunks, source_text, relative_path)
+                all_lexical_chunks.extend(lexical_chunks)
 
             except SyntaxError as e:
                 print(f"[Indexer Warning]: Skipped {relative_path} due to syntax error: {e}")
@@ -165,6 +174,11 @@ def pre_planner_indexer_node(state: AgentState) -> AgentState:
     # Push everything to Qdrant in one batch
     if all_qdrant_chunks:
         index_chunks(all_qdrant_chunks)
+    
+    # Rebuild lexical index with all chunks
+    if all_lexical_chunks:
+        lexical_index.rebuild(all_lexical_chunks)
+        print(f"[Indexer Status]: Indexed {len(all_lexical_chunks)} chunks to lexical index")
 
     print(f"[Indexer Status]: Mapped {len(state['file_registry'])} files, "
           f"indexed {len(all_qdrant_chunks)} chunks to Qdrant.")
@@ -264,28 +278,39 @@ def repo_reset_node(state: AgentState) -> AgentState:
 def planner_node(state: AgentState) -> AgentState:
     print("\n--- [PLANNER] ANALYZING REGISTRY & GENERATING STRATEGY ---")
 
-    # Retrieve semantically relevant chunks from Qdrant
+    # Construct semantic query for retrieval (vector + lexical)
     if state["iteration_count"] == 0:
         # First pass — broad retrieval on issue text
         query = f"{state['issue_title']} {state['issue_body']}"
     else:
         # Subsequent passes — refine query using critic feedback + test output
         query = f"{state['issue_title']} {state['critic_feedback']} {state['test_output']}"
-    relevant_chunks = retrieve_chunks(query, top_k=5)
+    
+    repo_path = state['repo_path']
+    
+    # Unified localization: stack trace (if present) + RRF(vector, lexical)
+    candidates = localize_full(
+        bug_report_text=state.get('issue_body', ''),  # optional; empty string if not available
+        query=query,                                   # semantic query for vector/lexical search
+        repo_path=repo_path,
+        lexical_db_path="lexical_repo.db",
+        max_results=5,
+        vector_top_k=10,
+        lexical_top_k=10,
+    )
 
-    if not relevant_chunks:
-        print("[Planner WARNING]: Qdrant returned no chunks — falling back to registry summary")
+    print(candidates[0].file_path)
+    
+    if not candidates:
+        print("[Planner WARNING]: Fusion returned no candidates — falling back to registry summary")
         context = "\n".join([
             f"File: {path} | Components: {', '.join([c['name'] for c in meta['chunks']])}"
             for path, meta in state["file_registry"].items()
         ])
     else:
-        context = "\n\n".join([
-    f"=== {chunk['path']} | {chunk['type']} '{chunk['name']}' "
-    f"(lines {chunk['start_line']}-{chunk['end_line']}) ==="
-    for chunk in relevant_chunks
-    ])
-        print(f"[Planner]: Retrieved {len(relevant_chunks)} chunks from Qdrant")
+        # Convert ranked candidates to formatted context for LLM
+        context = get_chunk_summaries(candidates)
+        print(f"[Planner]: Retrieved {len(candidates)} candidates (stack_trace + fused_retrieval)")
 
     result = planner_chain.invoke({
         "issue_title": state["issue_title"],

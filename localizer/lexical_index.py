@@ -223,5 +223,30 @@ class LexicalIndex:
                 deduped.append(tok)
         return " OR ".join(deduped[:64])
 
+    def get_chunk_by_id(self, chunk_id: str) -> dict | None:
+        """
+        Retrieve full chunk details by chunk_id, including content.
+        Returns dict with {chunk_id, file_path, symbol_name, content} or None if not found.
+        """
+        cur = self._conn.cursor()
+        cur.execute(
+            """
+            SELECT m.chunk_id, m.file_path, m.symbol_name, f.content
+            FROM chunk_meta m
+            JOIN chunk_fts f ON m.rowid = f.rowid
+            WHERE m.chunk_id = ?
+            """,
+            (chunk_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return {
+            "chunk_id": row[0],
+            "path": row[1],
+            "name": row[2],
+            "source": row[3],
+        }
+
     def close(self) -> None:
         self._conn.close()
