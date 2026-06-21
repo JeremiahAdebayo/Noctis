@@ -1,5 +1,6 @@
 # graph.py
 from langgraph.graph import StateGraph, END
+from langgraph.types import Send
 from agent.state import AgentState
 from agent.nodes import (
     issue_parser_node,
@@ -13,6 +14,10 @@ from agent.nodes import (
     test_generator_node,
     test_executor_node
 )
+
+def fan_out_to_engineers(state: AgentState):
+    tasks = state.get("failed_tasks") or state["engineer_tasks"]
+    return [Send("engineer", {"task": t}) for t in tasks]
 
 # 1. Define the Conditional Routing Gate Logic
 def evaluate_critic_verdict(state: AgentState) -> str:
@@ -66,7 +71,11 @@ workflow.add_edge("indexer", "planner")
 workflow.add_edge("planner", "debug_agent")
 workflow.add_edge("debug_agent", "resolver")
 workflow.add_edge("resolver", "test_generator")
-workflow.add_edge("test_generator", "engineer")
+workflow.add_conditional_edges(
+    "test_generator",
+    fan_out_to_engineers,
+    ["engineer"]
+)
 workflow.add_edge("engineer", "reassembler")
 workflow.add_edge("reassembler", "executor")
 workflow.add_edge("executor", "critic")
@@ -75,7 +84,7 @@ workflow.add_conditional_edges(
     "critic",
     evaluate_critic_verdict,
     {
-        "retry": "engineer",
+        "retry": "test_generator",   # see below — not "engineer"
         "complete": END
     }
 )

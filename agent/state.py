@@ -1,5 +1,5 @@
-from typing import TypedDict, Optional, Dict, List, Any
-
+from typing import TypedDict, Optional, Dict, List, Any, Annotated, operator
+from agent.schemas import EngineerTask
 class AgentState(TypedDict):
     # Issue metadata
     issue_id: str
@@ -14,7 +14,7 @@ class AgentState(TypedDict):
     requirement_path: str
     
     # Planner outputs 
-    target_file: List[Any]
+    engineer_tasks: List[EngineerTask]          # ← replaces target_file/target_functions/plan
     target_functions: Optional[str]
     dependency_manifest: Optional[Dict]
     
@@ -26,6 +26,9 @@ class AgentState(TypedDict):
     
     # Feedback & Cache
     current_code: Optional[str]
+    patches: Annotated[List[dict], operator.add]  # ← replaces current_code; reducer for fan-in
     test_output: Optional[str]
+    failed_tasks: Optional[List[EngineerTask]]   # ← populated by critic on partial failure
+
     critic_feedback: Optional[str]
     plan: Optional[str]

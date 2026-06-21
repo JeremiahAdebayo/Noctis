@@ -2,6 +2,7 @@
 import os
 import subprocess
 import sys
+from itertools import groupby
 import xml.etree.ElementTree as ET
 import libcst as cst
 import ast
@@ -39,10 +40,32 @@ critic_llm  = ChatOpenAI(base_url=PROXY_URL, model="gem-asea-critic",  api_key=P
 planner_prompt = ChatPromptTemplate.from_template(
     "You are an expert software architect analyzing a codebase to fix a bug.\n\n"
     "Issue: {issue_title}\n{issue_body}\n\n"
-    "Relevant code retrieved from the repository:\n{registry_summary}\n\n"
-    "Your Goal: Create a precise execution plan to fix the issue.\n"
-    "You must pick valid 'target_functions' or 'class names' that needs modification — use ONLY function or class names "
-    "that appear in the code above. Never invent or infer function names.\n"
+    "Relevant code retrieved from the repository, ranked by confidence "
+    "(STACK_TRACE = directly implicated by the error, FUSED_RETRIEVAL = "
+    "semantically/lexically relevant). Each chunk is labeled with its file path "
+    "— multiple chunks may belong to the same file even if not adjacent in this list:\n"
+    "{registry_summary}\n\n"
+    "Your Goal: Produce a list of per-file engineering tasks that together fix the issue.\n\n"
+    "Rules:\n"
+    "1. Create ONE task per file that needs modification. Do not create multiple tasks for "
+    "the same file_path — if a file needs several changes (even from multiple chunks above), "
+    "combine them into a single task's plan.\n"
+    "2. 'file_path' must be the EXACT path as it appears in a chunk header above "
+    "(the part before ' | '). Do not invent or guess paths.\n"
+    "3. 'plan' must be specific to that file only — describe exactly what changes that file needs "
+    "and why, including how it relates to changes in other files if relevant (e.g. 'this file's "
+    "caller must be updated to match the new return type introduced in utils.py').\n"
+    "4. 'target_functions' must list ONLY function or class names that literally appear in that "
+    "file's chunks above. Never invent or infer names. For methods, use 'ClassName.method_name' format.\n"
+    "5. If a task depends on understanding another file you are NOT modifying (e.g. it calls a "
+    "function whose signature is changing elsewhere), list that file under 'related_files' with a "
+    "short 'reason'. Do not list files you ARE modifying as related_files — give them their own task.\n"
+    "6. Only include files that require an actual code change. Files you merely need for context "
+    "go in 'related_files', not their own task.\n"
+    "7. STACK_TRACE chunks indicate where the error actually occurred — weight these most heavily "
+    "when deciding which file is the root cause vs. a downstream symptom.\n\n"
+    "Before finalizing, double check: no two tasks share the same file_path, and every "
+    "target_function name appears verbatim in a retrieved chunk for that file.\n"
 )
 
 # =========================================================================
@@ -275,23 +298,21 @@ def repo_reset_node(state: AgentState) -> AgentState:
     
     return state
 
+from itertools import groupby
+
 def planner_node(state: AgentState) -> AgentState:
     print("\n--- [PLANNER] ANALYZING REGISTRY & GENERATING STRATEGY ---")
 
-    # Construct semantic query for retrieval (vector + lexical)
     if state["iteration_count"] == 0:
-        # First pass — broad retrieval on issue text
         query = f"{state['issue_title']} {state['issue_body']}"
     else:
-        # Subsequent passes — refine query using critic feedback + test output
         query = f"{state['issue_title']} {state['critic_feedback']} {state['test_output']}"
-    
+
     repo_path = state['repo_path']
-    
-    # Unified localization: stack trace (if present) + RRF(vector, lexical)
+
     candidates = localize_full(
-        bug_report_text=state.get('issue_body', ''),  # optional; empty string if not available
-        query=query,                                   # semantic query for vector/lexical search
+        bug_report_text=state.get('issue_body', ''),
+        query=query,
         repo_path=repo_path,
         lexical_db_path="lexical_repo.db",
         max_results=5,
@@ -299,8 +320,6 @@ def planner_node(state: AgentState) -> AgentState:
         lexical_top_k=10,
     )
 
-    print(candidates[0].file_path)
-    
     if not candidates:
         print("[Planner WARNING]: Fusion returned no candidates — falling back to registry summary")
         context = "\n".join([
@@ -308,25 +327,42 @@ def planner_node(state: AgentState) -> AgentState:
             for path, meta in state["file_registry"].items()
         ])
     else:
-        # Convert ranked candidates to formatted context for LLM
-        context = get_chunk_summaries(candidates)
-        print(f"[Planner]: Retrieved {len(candidates)} candidates (stack_trace + fused_retrieval)")
+        # Group candidates by file_path so chunks from the same file are
+        # adjacent in the formatted context, while preserving tier/score
+        # ordering of the files themselves (first appearance wins order).
+        seen_order = []
+        by_file = {}
+        for c in candidates:
+            if c.file_path not in by_file:
+                by_file[c.file_path] = []
+                seen_order.append(c.file_path)
+            by_file[c.file_path].append(c)
 
-    result = planner_chain.invoke({
+        grouped_candidates = [c for fp in seen_order for c in by_file[fp]]
+        context = get_chunk_summaries(grouped_candidates)
+        print(f"[Planner]: Retrieved {len(candidates)} candidates across {len(by_file)} files")
+
+    result: PlannerOutput = planner_chain.invoke({
         "issue_title": state["issue_title"],
         "issue_body": state["issue_body"],
         "registry_summary": context
     })
 
-    print(f"[Planner] target_functions: {result.target_functions}")
-    print(f"[Planner] rationale: {result.rationale}")
+    # Guardrail: catch a planner output that targets the same file twice
+    # in one batch before it ever reaches reassembler's duplicate check.
+    paths = [t.file_path for t in result.engineer_tasks]
+    if len(paths) != len(set(paths)):
+        dupes = {p for p in paths if paths.count(p) > 1}
+        print(f"[Planner WARNING]: Planner emitted duplicate file_path tasks: {dupes}")
 
+    for task in result.engineer_tasks:
+        print(f"[Planner] file: {task.file_path} | target_functions: {task.target_functions}")
+    
     return {
-        "plan": result.plan,
+        "engineer_tasks": result.engineer_tasks,
         "pending_edits": [],
-        "target_functions": result.target_functions
+        "failed_tasks": None,
     }
-
 # =========================================================================
 # 3. NODE IMPLEMENTATIONS
 # =========================================================================
@@ -682,10 +718,21 @@ def reassembler_node(state: AgentState) -> AgentState:
 
     patch_failed = False
     failed_feedback_parts = []
+    touched_files = set()
+
+    # Guardrail from earlier: fail loudly if two patches target the same file
+    # in the same batch instead of silently overwriting one with the other.
+    seen_paths = [p.file_path for p in patches]
+    if len(seen_paths) != len(set(seen_paths)):
+        dupes = {p for p in seen_paths if seen_paths.count(p) > 1}
+        return {
+            "pending_edits": [],
+            "is_resolved": False,
+            "critic_feedback": f"Multiple patches target the same file in one batch: {dupes}. Planner must partition by distinct file_path."
+        }
 
     for patch in patches:
-        file_path = os.path.join(state['repo_path'], state['target_file'])
-        print(patch)
+        file_path = os.path.join(repo_path, patch.file_path)   # ← fixed
 
         if not os.path.exists(file_path):
             print(f"[Reassembler WARNING]: File not found — {patch.file_path}")
@@ -698,17 +745,15 @@ def reassembler_node(state: AgentState) -> AgentState:
 
         try:
             new_source = apply_edit_to_source(source, patch)
-
-            # Sanity check — make sure output is still valid Python
             ast.parse(new_source)
 
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(new_source)
 
+            touched_files.add(patch.file_path)
             print(f"[Reassembler]: Patched '{patch.node_path}' in '{patch.file_path}'")
 
         except ValueError as e:
-            # Node not found
             print(f"[Reassembler WARNING]: {e}")
             patch_failed = True
             failed_feedback_parts.append(
@@ -721,8 +766,7 @@ def reassembler_node(state: AgentState) -> AgentState:
             print(f"[Reassembler WARNING]: new_implementation has invalid syntax — {e}")
             patch_failed = True
             failed_feedback_parts.append(
-                f"new_implementation for '{patch.node_path}' has a syntax error: {e}. "
-                f"Fix the syntax and resubmit."
+                f"new_implementation for '{patch.node_path}' has a syntax error: {e}. Fix the syntax and resubmit."
             )
 
         except SyntaxError as e:
@@ -733,37 +777,32 @@ def reassembler_node(state: AgentState) -> AgentState:
             )
 
     if patch_failed:
-        with open(os.path.join(repo_path, state["target_file"]), "r") as f:
-            current_source = f.read()
         return {
             "pending_edits": [],
-            "current_code": current_source,
             "is_resolved": False,
             "critic_feedback": "\n".join(failed_feedback_parts)
         }
 
-    # Re-index
-    target_file = state["target_file"]
-    target_abs_path = os.path.join(repo_path, target_file)
-    with open(target_abs_path, "r") as f:
-        source = f.read()
-
-    try:
-        tree = ast.parse(source)
-        visitor = CodeMapVisitor()
-        visitor.visit(tree)
-        updated_registry = dict(state["file_registry"])
-        updated_registry[target_file] = {
-            "chunks": visitor.chunks,
-            "imports": visitor.imports,
-            "abs_path": target_abs_path
-        }
-        print(f"[Reassembler]: Re-indexed '{target_file}'")
-    except SyntaxError:
-        updated_registry = state["file_registry"]
+    # Re-index every file that was actually touched, not a single hardcoded one
+    updated_registry = dict(state["file_registry"])
+    for rel_path in touched_files:
+        abs_path = os.path.join(repo_path, rel_path)
+        with open(abs_path, "r") as f:
+            source = f.read()
+        try:
+            tree = ast.parse(source)
+            visitor = CodeMapVisitor()
+            visitor.visit(tree)
+            updated_registry[rel_path] = {
+                "chunks": visitor.chunks,
+                "imports": visitor.imports,
+                "abs_path": abs_path
+            }
+            print(f"[Reassembler]: Re-indexed '{rel_path}'")
+        except SyntaxError:
+            pass  # keep stale registry entry for this file rather than crash the batch
 
     return {
         "pending_edits": [],
-        "current_code": source,
         "file_registry": updated_registry
     }

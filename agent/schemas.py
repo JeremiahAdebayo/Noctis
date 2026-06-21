@@ -5,10 +5,18 @@ import libcst as cst
 import textwrap
 import ast
 
+
+class RelatedFile(BaseModel):
+    path: str
+class EngineerTask(BaseModel):
+    file_path: str
+    plan: str
+    target_functions: List[str] = Field(..., description="Exact function/class names in this file to modify, as they appear in the code. Do not invent names.")
+    related_files: list[RelatedFile] = []
 class PlannerOutput(BaseModel):
-    plan: str = Field(..., description="High-level execution plan describing exactly what changes to make.")
-    target_functions: List[str] = Field(..., description="The EXACT functions or class names as it appears in the code above. Do not invent names.")
-    rationale: str = Field(..., description="Why this specific location was chosen to fix the issue.")
+    engineer_tasks : List[EngineerTask]
+    
+    
 
 class IssueParserOutput(BaseModel):
     issue_id: str = Field(description="A unique issue ID in the format ISSUE-XXX.")
