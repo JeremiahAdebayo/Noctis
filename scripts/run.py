@@ -2,7 +2,30 @@
 from agent.graph import app
 
 issue = """
-Choice.normalize_choice() supports case-insensitive matching via case_sensitive=False, but doesn't account for Unicode normalization. A Choice(["café", "naïve"], case_sensitive=False) will treat "café" typed with a precomposed accent (NFC) and "café" typed with a decomposed accent (NFD) as different values, even though they're visually and semantically identical — casefold() alone doesn't collapse different Unicode composition forms. Add Unicode NFC normalization as a step in normalize_choice, applied before the existing casefold step, so both forms map to the same normalized value.
+## Bug: Cached score of 0 is treated as a cache miss
+
+`UserService.get_user_score()` does not correctly return cached values when the cached score is `0`.
+
+### Reproduction
+
+```python
+svc = UserService()
+
+svc.get_user_score("new_123")
+svc.get_user_score("new_123")
+```
+
+### Expected Behavior
+
+The score should be computed once and returned from the cache on subsequent calls.
+
+### Actual Behavior
+
+The score is recomputed on every call for users whose score is `0`.
+
+### Notes
+
+The issue only affects cached values that evaluate to `False` in a boolean context (e.g. `0`). Other scores are returned from the cache as expected.
 """
 
 

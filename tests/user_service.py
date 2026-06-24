@@ -6,9 +6,15 @@ class UserService:
         self.cache = Cache()
 
     def get_user_score(self, user_id: str) -> int:
+        """
+    Retrieve the user's score, using the cache when possible.
+    A cached score of ``0`` is a valid value and must be returned.
+    """
         cached = self.cache.get(user_id)
 
-        if cached:
+        # ``Cache.get`` returns ``None`` when the key is missing, so we must
+        # explicitly check for ``None`` rather than relying on truthiness.
+        if cached is not None:
             return cached
 
         score = self._compute_score(user_id)

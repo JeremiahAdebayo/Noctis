@@ -8,15 +8,17 @@ import ast
 
 class RelatedFile(BaseModel):
     path: str
+    reason: str = Field(description = "Why was was the files here considered related. Don't hallucinate")
+    relevant_functions: List[str] = []  # functions touched in this file
+
 class EngineerTask(BaseModel):
     file_path: str
     plan: str
     target_functions: List[str] = Field(..., description="Exact function/class names in this file to modify, as they appear in the code. Do not invent names.")
     related_files: list[RelatedFile] = []
+
 class PlannerOutput(BaseModel):
-    engineer_tasks : List[EngineerTask]
-    
-    
+    engineer_tasks : List[EngineerTask]   
 
 class IssueParserOutput(BaseModel):
     issue_id: str = Field(description="A unique issue ID in the format ISSUE-XXX.")
@@ -64,13 +66,8 @@ class TestGeneratorOutput(BaseModel):
     test_functions: List[str] = Field(description="List of test function names included in the test file.")
 
 class CriticOutput(BaseModel):
-    is_resolved: bool = Field(
-        description="Set to True only if the execution log explicitly shows all tests passed with a zero exit code."
-    )
-    feedback: str = Field(
-        description="If tests failed, provide a merciless breakdown of the traceback and actionable advice for the next iteration. If passed, leave an approval note."
-    )
-    
+    is_resolved: bool
+    feedback: str 
 
 class CodeMapVisitor(ast.NodeVisitor):
     def __init__(self):

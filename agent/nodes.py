@@ -12,7 +12,8 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import PydanticOutputParser
 from agent.schemas import (IssueParserOutput,
                            PlannerOutput,
-                           EngineerOutput, 
+                           EngineerOutput,
+                           EngineerTask, 
                            CriticOutput, 
                            CodeMapVisitor, 
                            TestGeneratorOutput, 
@@ -45,29 +46,30 @@ planner_prompt = ChatPromptTemplate.from_template(
     "semantically/lexically relevant). Each chunk is labeled with its file path "
     "— multiple chunks may belong to the same file even if not adjacent in this list:\n"
     "{registry_summary}\n\n"
-    "Your Goal: Produce a list of per-file engineering tasks that together fix the issue.\n\n"
+    "Previous attempt feedback (empty on first pass):\n{critic_feedback}\n\n"
+    "Previous test output (empty on first pass):\n{test_output}\n\n"
+    "Your Goal: Produce a complete list of per-file engineering tasks that together "
+    "fully fix the issue. If critic feedback is present, it describes exactly what "
+    "the previous attempt got wrong — use it to identify files that were missed or "
+    "incorrectly patched and include them in your plan.\n\n"
     "Rules:\n"
-    "1. Create ONE task per file that needs modification. Do not create multiple tasks for "
-    "the same file_path — if a file needs several changes (even from multiple chunks above), "
-    "combine them into a single task's plan.\n"
-    "2. 'file_path' must be the EXACT path as it appears in a chunk header above "
-    "(the part before ' | '). Do not invent or guess paths.\n"
-    "3. 'plan' must be specific to that file only — describe exactly what changes that file needs "
-    "and why, including how it relates to changes in other files if relevant (e.g. 'this file's "
-    "caller must be updated to match the new return type introduced in utils.py').\n"
-    "4. 'target_functions' must list ONLY function or class names that literally appear in that "
-    "file's chunks above. Never invent or infer names. For methods, use 'ClassName.method_name' format.\n"
-    "5. If a task depends on understanding another file you are NOT modifying (e.g. it calls a "
-    "function whose signature is changing elsewhere), list that file under 'related_files' with a "
-    "short 'reason'. Do not list files you ARE modifying as related_files — give them their own task.\n"
-    "6. Only include files that require an actual code change. Files you merely need for context "
-    "go in 'related_files', not their own task.\n"
-    "7. STACK_TRACE chunks indicate where the error actually occurred — weight these most heavily "
-    "when deciding which file is the root cause vs. a downstream symptom.\n\n"
-    "Before finalizing, double check: no two tasks share the same file_path, and every "
-    "target_function name appears verbatim in a retrieved chunk for that file.\n"
+    "1. Create ONE task per file that needs modification. If a file needs several "
+    "changes, combine them into a single task's plan.\n"
+    "2. 'file_path' must be the EXACT path as it appears in a chunk header above. "
+    "Do not invent or guess paths.\n"
+    "3. 'plan' must be specific to that file — describe exactly what needs to change "
+    "and why, referencing the critic feedback if relevant.\n"
+    "4. 'target_functions' must list ONLY function or class names that literally "
+    "appear in that file's chunks above. Never invent names.\n"
+    "5. If a task depends on another file you are NOT modifying, list it under "
+    "'related_files' with a short reason.\n"
+    "6. Only include files that require actual code changes.\n"
+    "7. STACK_TRACE chunks indicate where the error occurred — weight these heavily.\n"
+    "8. If critic feedback mentions a specific file or function that needs changing, "
+    "you MUST include it as a task if it appears in the retrieved chunks above.\n\n"
+    "Before finalizing: no two tasks share the same file_path, and every "
+    "target_function name appears verbatim in the retrieved code for that file.\n"
 )
-
 # =========================================================================
 # 1. SPECIALIZED MODEL INSTANTIATIONS
 # =========================================================================
@@ -77,9 +79,9 @@ planner_chain = planner_prompt | planner_llm.with_structured_output(PlannerOutpu
 # --- CODER CHAIN CONFIGURATION ---
 coder_prompt = ChatPromptTemplate.from_messages([
     ("system",
-     "You are an elite software engineer. It's important that you also think incredibly logically. You make precise, surgical edits to fix bugs.\n\n"
+     "You are an elite software engineer. You make precise, surgical edits to fix bugs.\n\n"
      "For each fix you must provide:\n"
-     "- file_path: relative path to the file\n"
+     "- file_path: relative path to the file (must be one of the valid paths listed below)\n"
      "- node_type: one of 'function', 'class', or 'method'\n"
      "  * 'function' — a top-level function\n"
      "  * 'class' — an entire class definition\n"
@@ -93,27 +95,31 @@ coder_prompt = ChatPromptTemplate.from_messages([
      "  * Include all decorators the original had\n"
      "  * Use correct indentation as a top-level definition\n"
      "  * Do not truncate — write the entire node\n"
-     "- add_imports: list of any new import lines needed e.g. ['import re', 'from typing import Optional']\n"
+     "- add_imports: list of any new import lines needed\n"
      "  * Only include imports not already present in the file\n"
      "  * Leave empty if no new imports are needed\n"
      "- rationale: why this change fixes the bug\n\n"
-     "Rules you must NEVER break: \n"
+     "Rules you must NEVER break:\n"
      "- Multiple edits allowed if the bug spans multiple functions, methods, or files\n"
      "- Prefer fixing the smallest node that contains the bug — method over class, function over module\n"
-     "- Never guess a node name. Use only names visible in the source code provided\n"
-     "Any new dependency must be declared via the add_imports field only."
-     "- If a fix requires changing a function signature, also patch callers and tests\n"
+     "- Never guess a node name — use ONLY names visible in the source code provided\n"
+     "- Never edit a file not listed under valid file paths\n"
+     "- Any new dependency must be declared via add_imports only\n"
+     "- If a fix requires changing a function signature, also patch callers if their source is provided\n"
+     "- If critic feedback is provided, it describes exactly what went wrong — address it directly\n"
      "- Output ONLY valid JSON matching the required schema"
     ),
     ("human",
      "Issue Title: {issue_title}\n"
      "Issue Body:\n{issue_body}\n\n"
-     "Execution Plan:\n{plan}\n\n"
-     "Target Node: {target_functions}\n\n"
-     "Source Code:\n{current_code}\n\n"
-     "Test File ({test_file_name}):\n{test_code}\n\n"
-     #"Previous Critic Feedback (if any):\n{critic_feedback}\n\n"
-     "Valid file paths for edits: {target_file}\n\n"
+     "Execution Plan for this file:\n{plan}\n\n"
+     "Target functions to modify: {target_functions}\n\n"
+     "Source code of file to edit:\n{current_code}\n\n"
+     "Related file context (read-only — do not edit these, but use them to understand dependencies):\n"
+     "{related_context}\n\n"
+     "Test file (for reference):\n{test_code}\n\n"
+     "Critic feedback from previous attempt (address this directly if present):\n{critic_feedback}\n\n"
+     "Valid file path for edits: {target_file}\n\n"
      "Produce all necessary patches now."
     )
 ])
@@ -122,10 +128,16 @@ coder_chain = coder_prompt | structure_coder
 
 # --- CRITIC CHAIN CONFIGURATION ---
 critic_prompt = ChatPromptTemplate.from_template(
-    "You are a ruthless code review and QA automation engine.\n"
+    "You are a ruthless QA engine evaluating whether a bug fix attempt succeeded.\n\n"
     "Original Issue:\n{issue_body}\n\n"
-    "Proposed Code Patch:\n{patch_code}\n\n"
-    "Automated Test Execution Output:\n{test_output}\n\n"
+    "Plans that were applied (one per file):\n{plans_applied}\n\n"
+    "Test Execution Output:\n{test_output}\n\n"
+    "Evaluate based on the test output alone:\n"
+    "- is_resolved: true ONLY if all tests pass. false if any test fails or errors.\n"
+    "- feedback: if tests failed, explain specifically what went wrong and what still "
+    "needs to change to fix it. Reference the exact failure from the test output — "
+    "function names, expected vs actual values, missing methods. Be specific enough "
+    "that a planner can use this to identify which files need changing next.\n"
 )
 critic_chain = critic_prompt | critic_llm.with_structured_output(CriticOutput)
 
@@ -303,15 +315,21 @@ from itertools import groupby
 def planner_node(state: AgentState) -> AgentState:
     print("\n--- [PLANNER] ANALYZING REGISTRY & GENERATING STRATEGY ---")
 
-    if state["iteration_count"] == 0:
-        query = f"{state['issue_title']} {state['issue_body']}"
-    else:
-        query = f"{state['issue_title']} {state['critic_feedback']} {state['test_output']}"
+    # Query always incorporates everything known so far
+    # On first pass: issue text only
+    # On retry: issue + critic feedback + test output
+    # Planner doesn't need to know which pass it is — it just uses all available context
+    query_parts = [state["issue_title"], state["issue_body"]]
+    if state.get("critic_feedback"):
+        query_parts.append(state["critic_feedback"])
+    if state.get("test_output"):
+        query_parts.append(state["test_output"])
+    query = " ".join(query_parts)
 
-    repo_path = state['repo_path']
+    repo_path = state["repo_path"]
 
     candidates = localize_full(
-        bug_report_text=state.get('issue_body', ''),
+        bug_report_text=state.get("issue_body", ""),
         query=query,
         repo_path=repo_path,
         lexical_db_path="lexical_repo.db",
@@ -327,12 +345,10 @@ def planner_node(state: AgentState) -> AgentState:
             for path, meta in state["file_registry"].items()
         ])
     else:
-        # Group candidates by file_path so chunks from the same file are
-        # adjacent in the formatted context, while preserving tier/score
-        # ordering of the files themselves (first appearance wins order).
         seen_order = []
         by_file = {}
         for c in candidates:
+            print(f"  {c.file_path} | {c.confidence_tier} | score: {c.score}")
             if c.file_path not in by_file:
                 by_file[c.file_path] = []
                 seen_order.append(c.file_path)
@@ -342,22 +358,24 @@ def planner_node(state: AgentState) -> AgentState:
         context = get_chunk_summaries(grouped_candidates)
         print(f"[Planner]: Retrieved {len(candidates)} candidates across {len(by_file)} files")
 
+    # Pass full history to planner so it replans with complete awareness
     result: PlannerOutput = planner_chain.invoke({
         "issue_title": state["issue_title"],
         "issue_body": state["issue_body"],
-        "registry_summary": context
+        "registry_summary": context,
+        "critic_feedback": state.get("critic_feedback", ""),
+        "test_output": state.get("test_output", ""),
     })
 
-    # Guardrail: catch a planner output that targets the same file twice
-    # in one batch before it ever reaches reassembler's duplicate check.
+    # Guardrail: catch duplicate file_path tasks
     paths = [t.file_path for t in result.engineer_tasks]
     if len(paths) != len(set(paths)):
         dupes = {p for p in paths if paths.count(p) > 1}
-        print(f"[Planner WARNING]: Planner emitted duplicate file_path tasks: {dupes}")
+        print(f"[Planner WARNING]: Duplicate file_path tasks detected: {dupes}")
 
     for task in result.engineer_tasks:
         print(f"[Planner] file: {task.file_path} | target_functions: {task.target_functions}")
-    
+
     return {
         "engineer_tasks": result.engineer_tasks,
         "pending_edits": [],
@@ -367,63 +385,101 @@ def planner_node(state: AgentState) -> AgentState:
 # 3. NODE IMPLEMENTATIONS
 # =========================================================================
 
-def engineer_node(state: AgentState) -> AgentState:
-    print(f"\n--- [ENGINEER] GENERATING SURGICAL PATCHES (ATTEMPT {state['iteration_count'] +1}) ---")
+def extract_target_functions(source: str, function_names: List[str]) -> str:
+    """Extract only named functions/classes from source via AST — avoids sending whole files."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return source[:1000]  # fallback if file has syntax errors
 
-    target_file = state.get("target_file", "")
-    target_functions = state.get("target_functions", "")
-    full_target_path = os.path.join(state['repo_path'], target_file)
+    extracted = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if node.name in function_names:
+                segment = ast.get_source_segment(source, node)
+                if segment:
+                    extracted.append(segment)
 
+    return "\n\n".join(extracted) if extracted else source[:1000]
+
+def engineer_node(state: dict) -> dict:
+    task: EngineerTask = state["task"]
+    repo_path = state["repo_path"]
+
+    # Read the target file from disk (post-reassembler state on retries)
+    full_target_path = os.path.join(repo_path, task.file_path)
     with open(full_target_path, "r", encoding="utf-8") as f:
         disk_truth = f.read()
-    print(f"current path :{full_target_path}")
-    # Pass test file contents if it exists
-    test_file_name = state.get("test_file", f"test_{target_file}")
-    print(test_file_name)
 
-    test_file_path = os.path.join(state['repo_path'], test_file_name) if test_file_name else None
-    test_truth = ""
-    if test_file_path and os.path.exists(test_file_path):
-        with open(test_file_path, "r", encoding="utf-8") as f:
-            test_truth = f.read()
+    print(f"[Engineer] target: {task.file_path}")
+    print(f"[Engineer] target_functions: {task.target_functions}")
+
+    # Build related context — extract only touched functions, not whole files
+    related_context_parts = []
+    for rf in task.related_files:
+        full_path = os.path.join(repo_path, rf.path)
+        if not os.path.exists(full_path):
+            print(f"[Engineer WARNING]: related file not found on disk — {rf.path}")
+            continue
+
+        with open(full_path, "r", encoding="utf-8") as f:
+            related_source = f.read()
+
+        if rf.relevant_functions:
+            snippet = extract_target_functions(related_source, rf.relevant_functions)
+        else:
+            snippet = related_source[:1000]
+
+        related_context_parts.append(
+            f"### {rf.path}\n"
+            f"# Reason: {rf.reason}\n"
+            f"# Relevant functions: {', '.join(rf.relevant_functions) if rf.relevant_functions else 'general context'}\n\n"
+            f"{snippet}"
+        )
+
+    related_context = "\n\n".join(related_context_parts) if related_context_parts else "No related files."
 
     result = coder_chain.invoke({
         "issue_title": state["issue_title"],
         "issue_body": state["issue_body"],
-        "plan": state["plan"],
+        "plan": task.plan,
         "current_code": disk_truth,
-        "test_code": test_truth,
-        #"critic_feedback": state.get("critic_feedback", "No feedback yet."),
-        "target_functions": target_functions,
-        "target_file": state.get("target_file", "Can't find target file"),
-        "test_file_name": state.get("test_file_name", "")
+        "related_context": related_context,
+        "test_code": state.get("test_code", "No test file available."),
+        "target_functions": ", ".join(task.target_functions),
+        "target_file": task.file_path,
+        "critic_feedback": state.get("critic_feedback", "No feedback yet — first attempt."),
     })
+
+    print(f"[Engineer]: Produced {len(result.edits)} edit(s) for {task.file_path}")
 
     return {
         "pending_edits": result.edits,
-        "iteration_count": state["iteration_count"] + 1
     }
 
 def critic_node(state: AgentState) -> AgentState:
-    print("\n--- [GROQ LLAMA] EVALUATING OUTPUT AND SYSTEM INTEGRITY ---")
-    
-    # 1. Invoke the chain. 
-    # Because your chain is configured for structured output, 'result' 
-    # is already the Pydantic object (CriticOutput).
+    print("\n--- [CRITIC] EVALUATING PATCH SET ---")
+
+    # Summarize what was attempted — plans only, not full source
+    plans_summary = "\n".join([
+        f"- {task.file_path}: {task.plan}"
+        for task in state["engineer_tasks"]
+    ])
+
     result = critic_chain.invoke({
         "issue_body": state["issue_body"],
-        "patch_code": state["current_code"],
-        "test_output": state.get("test_output", "No run data available."),
+        "plans_applied": plans_summary,
+        "test_output": state.get("test_output", "No test run data available."),
     })
-    
-    # 2. Access attributes directly from the Pydantic object.
-    # No .content, no manual string parsing, no .get() methods.
-    state["critic_feedback"] = result.feedback
-    state["is_resolved"] = result.is_resolved
-    
+
     print(f"\n>>> [CRITIC FEEDBACK]: {result.feedback or 'No feedback provided'}")
-    
-    return state
+    print(f">>> [CRITIC VERDICT]: {'RESOLVED' if result.is_resolved else 'NEEDS RETRY'}")
+
+    return {
+        "critic_feedback": result.feedback,
+        "is_resolved": result.is_resolved,
+        "iteration_count": state["iteration_count"] + 1,
+    }
 
 def install_dependencies(repo_path: str, python_executable: str):
     print("---INSTALLING DEPENDENCIES...---\n")
@@ -471,27 +527,75 @@ def install_dependencies(repo_path: str, python_executable: str):
         capture_output=True
     )
 
+def resolve_module_to_path(module_name, registry_keys):
+        # 1. Convert 'src.checkout.processor' -> 'src/checkout/processor'
+        path_candidate = module_name.replace(".", os.sep)
+        
+        # 2. Look for exact matches in registry
+        # We check keys that end with the candidate to allow for deeper imports
+        for key in registry_keys:
+            # Case A: Exact module file (e.g., src/utils/math.py)
+            if key == f"{path_candidate}.py":
+                return key
+            # Case B: Module in a folder with __init__.py (e.g., src/utils/math/__init__.py)
+            if key.startswith(path_candidate) and "__init__.py" in key:
+                return key
+        return None
 def test_generator_node(state: AgentState) -> AgentState:
     print("\n--- [TEST GENERATOR] WRITING VERIFICATION SUITE ---")
-    
+
     repo_path = state["repo_path"]
-    target_file = state["target_file"]
-    target_functions = state["target_functions"]
+    engineer_tasks = state["engineer_tasks"]
+    issue_id = state["issue_id"]
 
-    print(f"Target file {target_file} \n")
-    print(f"Path {repo_path}")
+    if not engineer_tasks:
+        print("[Test Generator WARNING]: No engineer tasks found — skipping test generation.")
+        return {"test_file": None, "test_code": ""}
 
+    # Build combined context from all files being changed
+    file_contexts = []
+    for task in engineer_tasks:
+        full_path = os.path.join(repo_path, task.file_path)
+        if not os.path.exists(full_path):
+            print(f"[Test Generator WARNING]: {task.file_path} not found on disk — skipping.")
+            continue
+        with open(full_path, "r", encoding="utf-8") as f:
+            source = f.read()
+        file_contexts.append(
+            f"### File: {task.file_path}\n"
+            f"# Plan: {task.plan}\n"
+            f"# Target functions: {', '.join(task.target_functions)}\n\n"
+            f"{source}"
+        )
 
-    # Check if a test file already exists for this target
-    existing_test_file = os.path.join(repo_path, f"test_{target_file}")
-    if os.path.exists(existing_test_file):
-        print(f"[Test Generator]: Existing test file found — using 'test_{target_file}' as-is.")
-        return {"test_file": f"test_{target_file}"}
+    combined_context = "\n\n".join(file_contexts)
+    # Read imports of each task's file and include dependency interfaces
+    registry_keys = list(state["file_registry"].keys())
+    dependency_context = []
 
-    # No existing tests — generate them
-    full_target_path = os.path.join(repo_path, target_file)
-    with open(full_target_path, "r", encoding="utf-8") as f:
-        source = f.read()
+    for task in engineer_tasks:
+        meta = state["file_registry"].get(task.file_path, {})
+        for imp in meta.get("imports", []):
+            dep_path = resolve_module_to_path(imp, registry_keys)
+            if dep_path and dep_path != task.file_path:
+                abs_path = state["file_registry"][dep_path]["abs_path"]
+                if os.path.exists(abs_path):
+                    with open(abs_path, "r") as f:
+                        dep_source = f.read()
+                    dependency_context.append(f"### Dependency: {dep_path}\n{dep_source}")
+
+    dependency_summary = "\n\n".join(dependency_context) if dependency_context else "No dependencies found."
+
+    # Check if a test file already exists for this issue
+    # Convention: test file is named after the primary (first) task's file
+    test_file_name = f"test_issue_{issue_id}.py"
+    test_file_path = os.path.join(repo_path, test_file_name)
+
+    if os.path.exists(test_file_path):
+        print(f"[Test Generator]: Existing test file found — using '{test_file_name}' as-is.")
+        with open(test_file_path, "r", encoding="utf-8") as f:
+            test_code = f.read()
+        return {"test_file": test_file_name, "test_code": test_code}
 
     test_generator_llm = ChatOpenAI(
         base_url=PROXY_URL,
@@ -501,43 +605,44 @@ def test_generator_node(state: AgentState) -> AgentState:
     ).with_structured_output(TestGeneratorOutput)
 
     test_prompt = ChatPromptTemplate.from_messages([
-    ("system",
-         "You are a senior QA engineer. Write pytest tests that define CORRECT expected behavior "
-         "after the bug is fixed. Do NOT write tests that expect exceptions or reproduce the bug. "
-         "Tests should assert what the function SHOULD return when working correctly. "
-         "Write tests that are air tight and catch logical bugs. "
-         "The test code you write should be inferred from what the main code is trying to do and not from the file name. "
-         "Use only pytest, no unittest.\n\n"
-         "Think logically and ensure you generate code that actually tests the source file"
-         "Also make sure your imports are correct"),
+        ("system",
+         "You are a senior QA engineer writing a pytest verification suite for a bug fix.\n\n"
+         "You will receive the source code of one or more files involved in fixing a single issue, "
+         "along with the plan describing what each file needs to change.\n\n"
+         "Your job: write ONE pytest test file that verifies the correct observable behavior "
+         "after the fix is applied — not per-file unit tests, but behavioral tests that directly "
+         "catch the bug described in the issue.\n\n"
+         "Rules:\n"
+         "- Tests must FAIL on the current buggy code and PASS after the fix.\n"
+         "- Do NOT write tests that assert exceptions or reproduce the bug as expected behavior.\n"
+         "- Assert what the code SHOULD do when working correctly.\n"
+         "- Use only pytest, no unittest.\n"
+         "- Imports must be correct and reference the actual module paths provided.\n"
+         "- Write at least 7 test functions covering edge cases, not just the happy path.\n"
+         "- Base tests on what the code actually does, not on file names."
+         "Available dependency interfaces (use ONLY methods that exist here):\n{dependency_summary}\n\n"),
         ("human",
-         "Issue: {issue_body}\n\n"
-         "Target functions: {target_functions}\n"
-         "Source file: {target_file}\n\n"
-         "Source code:\n{source}\n\n"
-         "Write a complete pytest test file "
-         "and contains at least 7 test functions to test the code for logic proof. "
-         "CRITICAL: Do not write test code based on the file name. Read the source code and write test code based on the function."
-        )
+         "Issue: {issue_title}\n\n"
+         "{issue_body}\n\n"
+         "Files being changed (with plans and current source):\n\n"
+         "{combined_context}\n\n"
+         "Write a single complete pytest test file that verifies this issue is fixed.")
     ])
 
     chain = test_prompt | test_generator_llm
-    test_file_name = f"test_{target_file}"
-    test_file_path = os.path.join(repo_path, test_file_name)
     max_attempts = 3
 
     for attempt in range(1, max_attempts + 1):
         print(f"[Test Generator]: Generation attempt {attempt}/{max_attempts}")
 
         result = chain.invoke({
+            "issue_title": state["issue_title"],
             "issue_body": state["issue_body"],
-            "target_functions": target_functions,
-            "target_file": target_file,
-            "source": source,
-            "module_name": target_file.replace(".py", "")
+            "combined_context": combined_context,
+            "dependency_summary": dependency_summary
         })
 
-        # Validate syntax
+        # Validate syntax before writing to disk
         try:
             ast.parse(result.test_code)
         except SyntaxError as e:
@@ -548,7 +653,8 @@ def test_generator_node(state: AgentState) -> AgentState:
         with open(test_file_path, "w", encoding="utf-8") as f:
             f.write(result.test_code)
 
-        # Validate tests fail on buggy code
+        # Verify tests fail on current buggy code — if they pass now,
+        # they won't catch anything after the fix either
         validation = subprocess.run(
             [sys.executable, "-m", "pytest", test_file_path, "-v", "--tb=short"],
             cwd=repo_path,
@@ -558,15 +664,14 @@ def test_generator_node(state: AgentState) -> AgentState:
 
         if "failed" in validation.stdout or "error" in validation.stdout.lower():
             print(f"[Test Generator]: Tests correctly fail on buggy code — verified.")
-            print(f"[Test Generator]: Written '{test_file_name}' with {len(result.test_functions)} test functions: {result.test_functions}")
-            return {"test_file": test_file_name}
+            print(f"[Test Generator]: Written '{test_file_name}' with functions: {result.test_functions}")
+            return {"test_file": test_file_name, "test_code": result.test_code}
 
         print(f"[Test Generator WARNING]: Tests pass on buggy code on attempt {attempt} — retrying.")
         os.remove(test_file_path)
 
-    # All attempts exhausted
-    print(f"[Test Generator CRITICAL]: Could not generate valid tests after {max_attempts} attempts.")
-    return {"test_file": None}
+    print(f"[Test Generator CRITICAL]: Could not generate valid failing tests after {max_attempts} attempts.")
+    return {"test_file": None, "test_code": ""}
 
 def test_executor_node(state: AgentState) -> AgentState:
     """
@@ -669,20 +774,6 @@ def resolver_node(state: AgentState) -> AgentState:
 }
 
     # Helper: Normalize Import -> File Path
-    def resolve_module_to_path(module_name, registry_keys):
-        # 1. Convert 'src.checkout.processor' -> 'src/checkout/processor'
-        path_candidate = module_name.replace(".", os.sep)
-        
-        # 2. Look for exact matches in registry
-        # We check keys that end with the candidate to allow for deeper imports
-        for key in registry_keys:
-            # Case A: Exact module file (e.g., src/utils/math.py)
-            if key == f"{path_candidate}.py":
-                return key
-            # Case B: Module in a folder with __init__.py (e.g., src/utils/math/__init__.py)
-            if key.startswith(path_candidate) and "__init__.py" in key:
-                return key
-        return None
 
     # Retrieve from registry
     target_meta = state["file_registry"].get(target_file)
@@ -732,6 +823,7 @@ def reassembler_node(state: AgentState) -> AgentState:
         }
 
     for patch in patches:
+        print(patch)
         file_path = os.path.join(repo_path, patch.file_path)   # ← fixed
 
         if not os.path.exists(file_path):
@@ -803,6 +895,6 @@ def reassembler_node(state: AgentState) -> AgentState:
             pass  # keep stale registry entry for this file rather than crash the batch
 
     return {
-        "pending_edits": [],
+        "pending_edits": None,
         "file_registry": updated_registry
     }
