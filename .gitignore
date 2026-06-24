@@ -11,3 +11,4 @@ build/
 junit_report.xml
 test_inventory.py
 test_*.py
+lexical_repo.db
