@@ -81,6 +81,9 @@ coder_prompt = ChatPromptTemplate.from_messages([
     ("system",
      "You are an elite software engineer. You make precise, surgical edits to fix bugs.\n\n"
      "For each fix you must provide:\n"
+     "⚠️ CRITICAL: new_implementation must contain ONLY the node definition itself.\n"
+     "NEVER include import statements inside new_implementation.\n"
+     "ALL imports go in the add_imports field ONLY. No exceptions.\n\n"
      "- file_path: relative path to the file (must be one of the valid paths listed below)\n"
      "- node_type: one of 'function', 'class', or 'method'\n"
      "  * 'function' — a top-level function\n"
@@ -824,7 +827,7 @@ def reassembler_node(state: AgentState) -> AgentState:
 
     for patch in patches:
         print(patch)
-        file_path = os.path.join(repo_path, patch.file_path)   # ← fixed
+        file_path = os.path.join(repo_path, patch.file_path) 
 
         if not os.path.exists(file_path):
             print(f"[Reassembler WARNING]: File not found — {patch.file_path}")

@@ -2,30 +2,30 @@
 from agent.graph import app
 
 issue = """
-## Bug: Cached score of 0 is treated as a cache miss
+## Issue: Authenticated sessions are not preserved across API requests
 
-`UserService.get_user_score()` does not correctly return cached values when the cached score is `0`.
+### Description
 
-### Reproduction
+After a successful login, requests made using the returned session token fail authentication. The same token that is returned by `login()` is rejected when passed to `profile()`, resulting in an unauthorized response.
 
-```python
-svc = UserService()
+### Steps to Reproduce
 
-svc.get_user_score("new_123")
-svc.get_user_score("new_123")
-```
+1. Create a new `API` instance.
+2. Call `login("alice", "1234")`.
+3. Pass the returned token to `profile(token)`.
 
 ### Expected Behavior
 
-The score should be computed once and returned from the cache on subsequent calls.
+The profile endpoint should recognize the session and return the authenticated user's information.
 
 ### Actual Behavior
 
-The score is recomputed on every call for users whose score is `0`.
+The profile endpoint responds with `401 Unauthorized`, as if the session does not exist.
 
 ### Notes
 
-The issue only affects cached values that evaluate to `False` in a boolean context (e.g. `0`). Other scores are returned from the cache as expected.
+This appears to be a regression affecting session persistence between API calls. The issue is reproducible consistently and does not depend on the credentials used, provided the login succeeds.
+
 """
 
 
